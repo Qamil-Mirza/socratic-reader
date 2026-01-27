@@ -1,0 +1,412 @@
+/* =============================================================================
+   Socratic Reader - Content Script Styles
+   ============================================================================= */
+
+/* CSS Custom Properties */
+:root {
+  --sr-green: #7cb342;
+  --sr-green-light: #c5e1a5;
+  --sr-green-dark: #558b2f;
+  --sr-yellow: #fff59d;
+  --sr-yellow-dark: #fbc02d;
+  --sr-bg: #fafafa;
+  --sr-bg-dark: #f5f5f5;
+  --sr-text: #212121;
+  --sr-text-secondary: #616161;
+  --sr-border: #e0e0e0;
+  --sr-shadow: rgba(0, 0, 0, 0.1);
+  --sr-overlay-width: 380px;
+  --sr-radius: 8px;
+  --sr-radius-sm: 4px;
+  --sr-transition: 0.2s ease;
+}
+
+/* =============================================================================
+   Highlight Marks
+   ============================================================================= */
+
+.socratic-highlight {
+  background-color: var(--sr-yellow);
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background-color var(--sr-transition), box-shadow var(--sr-transition);
+}
+
+.socratic-highlight:hover {
+  background-color: var(--sr-yellow-dark);
+}
+
+.socratic-highlight.active {
+  background-color: var(--sr-green-light);
+  box-shadow: 0 0 0 2px var(--sr-green);
+}
+
+/* =============================================================================
+   Sidebar Overlay
+   ============================================================================= */
+
+#socratic-reader-overlay {
+  position: fixed;
+  top: 0;
+  right: calc(-1 * var(--sr-overlay-width) - 20px);
+  width: var(--sr-overlay-width);
+  height: 100vh;
+  background: var(--sr-bg);
+  border-left: 1px solid var(--sr-border);
+  box-shadow: -4px 0 16px var(--sr-shadow);
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--sr-text);
+  display: flex;
+  flex-direction: column;
+  transition: right 0.3s ease;
+  box-sizing: border-box;
+}
+
+#socratic-reader-overlay.visible {
+  right: 0;
+}
+
+#socratic-reader-overlay * {
+  box-sizing: border-box;
+}
+
+/* Header */
+#socratic-reader-overlay .sr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--sr-border);
+  background: var(--sr-bg);
+  flex-shrink: 0;
+}
+
+#socratic-reader-overlay .sr-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--sr-green-dark);
+}
+
+#socratic-reader-overlay .sr-close-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  font-size: 24px;
+  color: var(--sr-text-secondary);
+  cursor: pointer;
+  border-radius: var(--sr-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--sr-transition), color var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-close-btn:hover {
+  background: var(--sr-border);
+  color: var(--sr-text);
+}
+
+/* Header Actions */
+#socratic-reader-overlay .sr-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#socratic-reader-overlay .sr-reanalyze-btn {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  font-size: 18px;
+  color: var(--sr-text-secondary);
+  cursor: pointer;
+  border-radius: var(--sr-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--sr-transition), color var(--sr-transition), transform var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-reanalyze-btn:hover {
+  background: var(--sr-border);
+  color: var(--sr-green-dark);
+  transform: rotate(180deg);
+}
+
+/* Cache Notice */
+#socratic-reader-overlay .sr-cache-notice {
+  padding: 8px 16px;
+  background: var(--sr-green-light);
+  color: var(--sr-green-dark);
+  font-size: 12px;
+  text-align: center;
+  border-bottom: 1px solid var(--sr-border);
+}
+
+/* Progress */
+#socratic-reader-overlay .sr-progress {
+  padding: 20px;
+  text-align: center;
+}
+
+#socratic-reader-overlay .sr-progress-text {
+  margin-bottom: 12px;
+  color: var(--sr-text-secondary);
+}
+
+#socratic-reader-overlay .sr-progress-bar {
+  height: 4px;
+  background: var(--sr-border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+#socratic-reader-overlay .sr-progress-fill {
+  height: 100%;
+  background: var(--sr-green);
+  width: 0;
+  transition: width 0.3s ease;
+}
+
+/* Error */
+#socratic-reader-overlay .sr-error {
+  padding: 20px;
+  color: #c62828;
+  background: #ffebee;
+  border-left: 4px solid #c62828;
+  margin: 20px;
+  border-radius: var(--sr-radius-sm);
+}
+
+/* Empty State */
+#socratic-reader-overlay .sr-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--sr-text-secondary);
+}
+
+#socratic-reader-overlay .sr-empty p {
+  margin: 8px 0;
+}
+
+/* Warning */
+#socratic-reader-overlay .sr-warning {
+  padding: 12px 16px;
+  color: #f57c00;
+  background: #fff3e0;
+  border-left: 4px solid #f57c00;
+  margin: 0 0 16px 0;
+  border-radius: var(--sr-radius-sm);
+  font-size: 13px;
+}
+
+/* Highlights List */
+#socratic-reader-overlay .sr-highlights-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* Highlight Item */
+#socratic-reader-overlay .sr-highlight-item {
+  background: white;
+  border: 1px solid var(--sr-border);
+  border-radius: var(--sr-radius);
+  margin-bottom: 12px;
+  overflow: hidden;
+  transition: border-color var(--sr-transition), box-shadow var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-highlight-item:hover {
+  border-color: var(--sr-green-light);
+}
+
+#socratic-reader-overlay .sr-highlight-item.active {
+  border-color: var(--sr-green);
+  box-shadow: 0 2px 8px var(--sr-shadow);
+}
+
+/* Highlight Header (Clickable) */
+#socratic-reader-overlay .sr-highlight-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  background: var(--sr-bg-dark);
+  transition: background-color var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-highlight-header:hover {
+  background: var(--sr-border);
+}
+
+#socratic-reader-overlay .sr-highlight-number {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  background: var(--sr-green);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#socratic-reader-overlay .sr-claim {
+  margin: 0;
+  font-style: italic;
+  color: var(--sr-text-secondary);
+  font-size: 13px;
+}
+
+/* Highlight Content */
+#socratic-reader-overlay .sr-highlight-content {
+  padding: 16px;
+  border-top: 1px solid var(--sr-border);
+}
+
+#socratic-reader-overlay .sr-reason,
+#socratic-reader-overlay .sr-question,
+#socratic-reader-overlay .sr-explanation {
+  margin-bottom: 12px;
+}
+
+#socratic-reader-overlay .sr-reason strong,
+#socratic-reader-overlay .sr-question strong {
+  color: var(--sr-green-dark);
+}
+
+#socratic-reader-overlay .sr-question {
+  font-size: 15px;
+}
+
+#socratic-reader-overlay .sr-explanation {
+  color: var(--sr-text-secondary);
+  font-size: 13px;
+}
+
+/* Notes Section */
+#socratic-reader-overlay .sr-notes {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--sr-border);
+}
+
+#socratic-reader-overlay .sr-note-input {
+  width: 100%;
+  min-height: 80px;
+  padding: 12px;
+  border: 1px solid var(--sr-border);
+  border-radius: var(--sr-radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  resize: vertical;
+  transition: border-color var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-note-input:focus {
+  outline: none;
+  border-color: var(--sr-green);
+}
+
+#socratic-reader-overlay .sr-note-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#socratic-reader-overlay .sr-save-note,
+#socratic-reader-overlay .sr-delete-note {
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--sr-radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--sr-transition), transform var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-save-note {
+  background: var(--sr-green);
+  color: white;
+}
+
+#socratic-reader-overlay .sr-save-note:hover {
+  background: var(--sr-green-dark);
+}
+
+#socratic-reader-overlay .sr-save-note:active {
+  transform: scale(0.98);
+}
+
+#socratic-reader-overlay .sr-delete-note {
+  background: transparent;
+  color: #c62828;
+  border: 1px solid currentColor;
+}
+
+#socratic-reader-overlay .sr-delete-note:hover {
+  background: #ffebee;
+}
+
+/* Navigation */
+#socratic-reader-overlay .sr-highlight-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-top: 1px solid var(--sr-border);
+  background: var(--sr-bg);
+  flex-shrink: 0;
+}
+
+#socratic-reader-overlay .sr-nav-btn {
+  padding: 8px 16px;
+  border: 1px solid var(--sr-border);
+  background: white;
+  border-radius: var(--sr-radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background-color var(--sr-transition), border-color var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-nav-btn:hover {
+  background: var(--sr-bg-dark);
+  border-color: var(--sr-green);
+}
+
+#socratic-reader-overlay .sr-counter {
+  font-size: 13px;
+  color: var(--sr-text-secondary);
+  font-weight: 500;
+}
+
+/* =============================================================================
+   Scrollbar Styling
+   ============================================================================= */
+
+#socratic-reader-overlay .sr-highlights-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+#socratic-reader-overlay .sr-highlights-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#socratic-reader-overlay .sr-highlights-list::-webkit-scrollbar-thumb {
+  background: var(--sr-border);
+  border-radius: 3px;
+}
+
+#socratic-reader-overlay .sr-highlights-list::-webkit-scrollbar-thumb:hover {
+  background: var(--sr-text-secondary);
+}
