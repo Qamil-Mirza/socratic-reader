@@ -26,7 +26,10 @@ Return STRICT JSON with schema:
 { "highlights": [{"start":..., "end":..., "reason":"...", "question":"...", "explanation":"..."}] }
 Rules:
 - The highlighted span MUST be a verbatim substring of the chunk.
-- Prefer spans that capture the core claim (not a whole paragraph).
+- Highlight COMPLETE statements or claims that are meaningful when read alone.
+- Include full sentences or complete clauses - avoid fragmentary phrases.
+- A good highlight should make sense without additional context (e.g., "Human skin is the first line of defense against many pathogens" rather than just "first line of").
+- Avoid highlighting entire paragraphs; focus on 1-3 sentence spans that capture key ideas.
 - Keep reason/explanation concise.
 - start and end are character offsets (0-indexed) within the provided text.
 - Ensure start < end.

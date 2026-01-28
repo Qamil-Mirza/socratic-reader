@@ -303,8 +303,13 @@ function extractText(): { text: string; nodeRanges: NodeRange[] } | null {
  */
 export function chunkText(text: string, nodeRanges: NodeRange[]): TextChunk[] {
   const words = text.split(/\s+/);
-  
+
   if (words.length <= CHUNK_WORD_LIMIT) {
+    // Verify text matches nodeRanges
+    const nodeText = nodeRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
+    if (nodeText !== text) {
+      console.warn('[Socratic Reader] Text mismatch in single chunk. Expected length:', text.length, 'Got:', nodeText.length);
+    }
     return [{ text, nodeRanges, globalOffset: 0 }];
   }
 
@@ -317,7 +322,7 @@ export function chunkText(text: string, nodeRanges: NodeRange[]): TextChunk[] {
     if (/\s/.test(text[i])) {
       wordCount++;
     }
-    
+
     // Track sentence boundaries
     if (/[.!?]/.test(text[i]) && (i + 1 >= text.length || /\s/.test(text[i + 1]))) {
       lastSentenceEnd = i + 1;
@@ -325,15 +330,21 @@ export function chunkText(text: string, nodeRanges: NodeRange[]): TextChunk[] {
 
     // Time to split
     if (wordCount >= CHUNK_WORD_LIMIT && lastSentenceEnd > currentChunkStart) {
-      const chunkText = text.slice(currentChunkStart, lastSentenceEnd).trim();
+      const chunkText = text.slice(currentChunkStart, lastSentenceEnd);
       const chunkRanges = getNodeRangesForOffset(nodeRanges, currentChunkStart, lastSentenceEnd);
-      
+
+      // Verify this chunk's text matches its nodeRanges
+      const nodeText = chunkRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
+      if (nodeText !== chunkText) {
+        console.warn('[Socratic Reader] Text mismatch in chunk. Expected:', chunkText.length, 'chars, got:', nodeText.length);
+      }
+
       chunks.push({
         text: chunkText,
         nodeRanges: chunkRanges,
         globalOffset: currentChunkStart,
       });
-      
+
       currentChunkStart = lastSentenceEnd;
       wordCount = 0;
     }
@@ -341,9 +352,16 @@ export function chunkText(text: string, nodeRanges: NodeRange[]): TextChunk[] {
 
   // Add remaining text
   if (currentChunkStart < text.length) {
-    const chunkText = text.slice(currentChunkStart).trim();
+    const chunkText = text.slice(currentChunkStart);
     if (chunkText) {
       const chunkRanges = getNodeRangesForOffset(nodeRanges, currentChunkStart, text.length);
+
+      // Verify this chunk's text matches its nodeRanges
+      const nodeText = chunkRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
+      if (nodeText !== chunkText) {
+        console.warn('[Socratic Reader] Text mismatch in final chunk. Expected:', chunkText.length, 'chars, got:', nodeText.length);
+      }
+
       chunks.push({
         text: chunkText,
         nodeRanges: chunkRanges,
@@ -364,25 +382,57 @@ function getNodeRangesForOffset(
   endOffset: number
 ): NodeRange[] {
   const result: NodeRange[] = [];
-  
+
   for (const range of nodeRanges) {
-    const rangeEnd = range.globalOffset + range.end;
-    
+    const nodeTextLength = range.node.textContent?.length ?? 0;
+
+    // Calculate where this range ends in the combined text
+    const rangeContribution = range.end - range.start;
+    const rangeStart = range.globalOffset;
+    const rangeEnd = range.globalOffset + rangeContribution;
+
     // Check if this range overlaps with our target range
-    if (rangeEnd > startOffset && range.globalOffset < endOffset) {
-      // Adjust offsets relative to chunk
-      const newStart = Math.max(0, startOffset - range.globalOffset);
-      const newEnd = Math.min(range.end, endOffset - range.globalOffset);
-      
+    if (rangeEnd > startOffset && rangeStart < endOffset) {
+      // Calculate how far into this range's contribution we need to start/end
+      const offsetIntoRangeStart = Math.max(0, startOffset - rangeStart);
+      const offsetIntoRangeEnd = Math.min(rangeContribution, endOffset - rangeStart);
+
+      // Map to actual DOM node offsets (add to range.start since range.start might be non-zero)
+      const newStart = range.start + offsetIntoRangeStart;
+      const newEnd = range.start + offsetIntoRangeEnd;
+
+      // Validate that offsets are within the node's actual text length
+      if (newStart > nodeTextLength || newEnd > nodeTextLength) {
+        console.error('[Socratic Reader] Invalid node range detected:', {
+          nodeText: range.node.textContent?.slice(0, 50) + '...',
+          nodeLength: nodeTextLength,
+          originalRange: { start: range.start, end: range.end, globalOffset: range.globalOffset },
+          calculatedRange: { newStart, newEnd },
+          offsetIntoRange: { start: offsetIntoRangeStart, end: offsetIntoRangeEnd },
+          chunkRange: { startOffset, endOffset },
+          rangeContribution,
+          rangeStart,
+          rangeEnd,
+        });
+
+        // This indicates a bug - range.start/end are supposed to be valid node offsets
+        // Skip this range entirely rather than clamping, as clamping produces wrong text
+        console.warn('[Socratic Reader] Skipping invalid range - this is a bug in getNodeRangesForOffset');
+        continue;
+      }
+
+      // Calculate new globalOffset relative to the chunk's start
+      const newGlobalOffset = Math.max(0, rangeStart - startOffset);
+
       result.push({
         ...range,
         start: newStart,
         end: newEnd,
-        globalOffset: range.globalOffset - startOffset + newStart,
+        globalOffset: newGlobalOffset,
       });
     }
   }
-  
+
   return result;
 }
 
@@ -398,35 +448,135 @@ export function offsetToRange(chunk: TextChunk, start: number, end: number): Ran
     return null;
   }
 
+  // Verify that nodes still have the expected content
+  // If DOM has changed since extraction, our offsets are invalid
+  const currentText = chunk.nodeRanges
+    .map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '')
+    .join('');
+
+  if (currentText !== chunk.text) {
+    console.warn('[Socratic Reader] DOM has changed since extraction. Expected text length:', chunk.text.length, 'Current:', currentText.length);
+    console.warn('[Socratic Reader] Highlight offsets are invalid, skipping this highlight');
+    return null;
+  }
+
+  // Calculate total text length from nodeRanges
+  const totalLength = chunk.nodeRanges.reduce((sum, nr) => sum + (nr.end - nr.start), 0);
+
+  // Validate offsets against actual content length
+  if (start >= totalLength) {
+    console.warn('[Socratic Reader] Start offset', start, 'beyond content length', totalLength);
+    return null;
+  }
+
+  // Cap end at content length if LLM returned offset beyond the text
+  const cappedEnd = Math.min(end, totalLength);
+
   const range = document.createRange();
   let foundStart = false;
   let foundEnd = false;
   let currentOffset = 0;
 
   for (const nodeRange of chunk.nodeRanges) {
-    const nodeText = nodeRange.node.textContent ?? '';
+    // Check if the node still exists and has content
+    const actualNodeLength = nodeRange.node.textContent?.length ?? 0;
+
+    // Skip empty nodes - they may have been emptied after text extraction
+    if (actualNodeLength === 0) {
+      console.warn('[Socratic Reader] Skipping empty node in offsetToRange');
+      continue;
+    }
+
+    // Validate nodeRange offsets against actual node content
+    if (nodeRange.start >= actualNodeLength || nodeRange.end > actualNodeLength) {
+      console.error('[Socratic Reader] NodeRange offsets exceed actual node length:', {
+        nodeText: nodeRange.node.textContent?.slice(0, 50),
+        actualLength: actualNodeLength,
+        rangeStart: nodeRange.start,
+        rangeEnd: nodeRange.end,
+      });
+      // Skip this invalid node range
+      continue;
+    }
+
+    // Calculate the actual contribution of this node to the chunk
+    const nodeContribution = nodeRange.end - nodeRange.start;
     const nodeStart = currentOffset;
-    const nodeEnd = currentOffset + nodeText.length;
+    const nodeEnd = currentOffset + nodeContribution;
 
     // Find start position
     if (!foundStart && start >= nodeStart && start < nodeEnd) {
-      const localOffset = start - nodeStart;
+      // Map from chunk offset to node offset
+      const offsetIntoNodeContribution = start - nodeStart;
+      const actualNodeOffset = nodeRange.start + offsetIntoNodeContribution;
+
+      // Re-check node length immediately before using it (race condition protection)
+      const nodeLength = nodeRange.node.textContent?.length ?? 0;
+
+      if (nodeLength === 0) {
+        console.warn('[Socratic Reader] Node became empty before setStart');
+        return null;
+      }
+
+      // Final validation before setting range
+      if (actualNodeOffset > nodeLength) {
+        console.error('[Socratic Reader] Calculated start offset exceeds node length:', {
+          actualNodeOffset,
+          nodeLength,
+          nodeText: nodeRange.node.textContent?.slice(0, 50),
+        });
+        return null;
+      }
+
       try {
-        range.setStart(nodeRange.node, localOffset);
+        range.setStart(nodeRange.node, actualNodeOffset);
         foundStart = true;
-      } catch {
+      } catch (e) {
+        console.error('[Socratic Reader] setStart failed despite validation:', {
+          error: e,
+          actualNodeOffset,
+          nodeLength,
+          nodeText: nodeRange.node.textContent,
+        });
         return null;
       }
     }
 
     // Find end position
-    if (foundStart && !foundEnd && end > nodeStart && end <= nodeEnd) {
-      const localOffset = end - nodeStart;
+    if (foundStart && !foundEnd && cappedEnd > nodeStart && cappedEnd <= nodeEnd) {
+      // Map from chunk offset to node offset
+      const offsetIntoNodeContribution = cappedEnd - nodeStart;
+      const actualNodeOffset = nodeRange.start + offsetIntoNodeContribution;
+
+      // Re-check node length immediately before using it (race condition protection)
+      const nodeLength = nodeRange.node.textContent?.length ?? 0;
+
+      if (nodeLength === 0) {
+        console.warn('[Socratic Reader] Node became empty before setEnd');
+        return null;
+      }
+
+      // Final validation before setting range
+      if (actualNodeOffset > nodeLength) {
+        console.error('[Socratic Reader] Calculated end offset exceeds node length:', {
+          actualNodeOffset,
+          nodeLength,
+          nodeText: nodeRange.node.textContent?.slice(0, 50),
+        });
+        return null;
+      }
+
       try {
-        range.setEnd(nodeRange.node, localOffset);
+        range.setEnd(nodeRange.node, actualNodeOffset);
         foundEnd = true;
         break;
-      } catch {
+      } catch (e) {
+        console.error('[Socratic Reader] setEnd failed despite validation:', {
+          error: e,
+          actualNodeOffset,
+          nodeLength,
+          nodeText: nodeRange.node.textContent,
+        });
         return null;
       }
     }
@@ -434,18 +584,35 @@ export function offsetToRange(chunk: TextChunk, start: number, end: number): Ran
     currentOffset = nodeEnd;
   }
 
-  // Handle case where end is past the last node
+  // Handle case where end is past the last node (but we still found start)
   if (foundStart && !foundEnd) {
     const lastRange = chunk.nodeRanges[chunk.nodeRanges.length - 1];
+    const nodeLength = lastRange.node.textContent?.length ?? 0;
+
+    if (nodeLength === 0) {
+      console.warn('[Socratic Reader] Last node is empty, cannot set end');
+      return null;
+    }
+
+    if (lastRange.end > nodeLength) {
+      console.error('[Socratic Reader] Last node range end exceeds actual length:', {
+        rangeEnd: lastRange.end,
+        nodeLength,
+      });
+      return null;
+    }
+
     try {
-      range.setEnd(lastRange.node, lastRange.node.textContent?.length ?? 0);
+      range.setEnd(lastRange.node, lastRange.end);
       foundEnd = true;
-    } catch {
+    } catch (e) {
+      console.error('[Socratic Reader] Failed to set range end at last node:', e);
       return null;
     }
   }
 
   if (!foundStart || !foundEnd) {
+    console.warn('[Socratic Reader] Could not find', !foundStart ? 'start' : 'end', 'position for offset', start, '-', end, 'in chunk with length', totalLength);
     return null;
   }
 
@@ -868,14 +1035,17 @@ function applyCachedHighlights(
   chunks: TextChunk[]
 ): void {
   let highlightCounter = 0;
-  
+
+  // Process all highlights first (in original reading order)
+  const processed: ProcessedHighlight[] = [];
+
   // Cached highlights have global offsets, need to map to chunks
   for (const h of cachedHighlights) {
     // Find which chunk this highlight belongs to
     let chunkIndex = 0;
     let localStart = h.start;
     let localEnd = h.end;
-    
+
     for (let i = 0; i < chunks.length; i++) {
       const chunkEnd = chunks[i].globalOffset + chunks[i].text.length;
       if (h.start >= chunks[i].globalOffset && h.start < chunkEnd) {
@@ -885,12 +1055,12 @@ function applyCachedHighlights(
         break;
       }
     }
-    
+
     const id = `h-${highlightCounter++}`;
     const chunk = chunks[chunkIndex];
     const text = chunk.text.slice(localStart, localEnd);
     const range = offsetToRange(chunk, localStart, localEnd);
-    
+
     const processedHighlight: ProcessedHighlight = {
       ...h,
       start: localStart,
@@ -900,13 +1070,22 @@ function applyCachedHighlights(
       range,
       chunkIndex,
     };
-    
-    if (range) {
-      applyHighlight(range, id);
-    }
-    
-    currentHighlights.push(processedHighlight);
+
+    processed.push(processedHighlight);
   }
+
+  // Apply to DOM in REVERSE order (end to start) to prevent invalidation
+  // When we wrap text in spans, it modifies the DOM. Applying from end to start
+  // ensures earlier highlights don't invalidate later ones.
+  const reversedForDOM = [...processed].reverse();
+  for (const ph of reversedForDOM) {
+    if (ph.range) {
+      applyHighlight(ph.range, ph.id);
+    }
+  }
+
+  // Add to currentHighlights in original reading order for sidebar display
+  currentHighlights.push(...processed);
 }
 
 /**
@@ -976,10 +1155,20 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
         chunkIndex: i,
         url: window.location.href,
       }) as AnalyzeChunkResponse;
-      
+
+      // Check for null/undefined response (background script crash/timeout)
+      if (!response) {
+        console.error(`[Socratic Reader] Chunk ${i}: No response from background script`);
+        if (i === 0 && chunks.length === 1) {
+          showError('Analysis failed: No response from background script. Try reloading the extension.');
+          return;
+        }
+        continue;
+      }
+
       if (response.error) {
         console.warn(`[Socratic Reader] Chunk ${i} error:`, response.error);
-        
+
         // Show error for first chunk, continue for others
         if (i === 0 && chunks.length === 1) {
           showError(response.error);
@@ -989,12 +1178,14 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
       }
       
       if (response.highlights) {
-        // Process and apply highlights
+        // Process all highlights first (in original order for display)
+        const processedForChunk: ProcessedHighlight[] = [];
+
         for (const h of response.highlights) {
           const id = `h-${highlightCounter++}`;
           const text = chunks[i].text.slice(h.start, h.end);
           const range = offsetToRange(chunks[i], h.start, h.end);
-          
+
           const processedHighlight: ProcessedHighlight = {
             ...h,
             id,
@@ -1002,14 +1193,9 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
             range,
             chunkIndex: i,
           };
-          
-          // Apply DOM highlight
-          if (range) {
-            applyHighlight(range, id);
-          }
-          
-          currentHighlights.push(processedHighlight);
-          
+
+          processedForChunk.push(processedHighlight);
+
           // Store with global offset for cache
           allHighlightsForCache.push({
             ...h,
@@ -1017,12 +1203,35 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
             end: h.end + chunks[i].globalOffset,
           });
         }
+
+        // Apply to DOM in REVERSE order (end to start)
+        // This prevents earlier highlights from invalidating later ones when we modify the DOM
+        const reversedForDOM = [...processedForChunk].reverse();
+        for (const ph of reversedForDOM) {
+          if (ph.range) {
+            applyHighlight(ph.range, ph.id);
+          }
+        }
+
+        // Add to currentHighlights in original reading order
+        currentHighlights.push(...processedForChunk);
       }
     } catch (e) {
-      console.error(`[Socratic Reader] Chunk ${i} error:`, e);
-      
+      // Check if it's a message channel error
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      console.error(`[Socratic Reader] Chunk ${i} error:`, errorMsg, e);
+
+      // Check for Chrome runtime error
+      if (chrome.runtime.lastError) {
+        console.error(`[Socratic Reader] Chrome runtime error:`, chrome.runtime.lastError);
+      }
+
       if (i === 0 && chunks.length === 1) {
-        showError(e instanceof Error ? e.message : 'Analysis failed');
+        if (errorMsg.includes('message channel')) {
+          showError('Analysis timed out. The text might be too complex or the API might be slow. Try selecting a smaller portion of text.');
+        } else {
+          showError(errorMsg);
+        }
         return;
       }
     }

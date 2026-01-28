@@ -36,7 +36,7 @@ function createChunkFromBody(): TextChunk {
   const textNodes = getTextNodesSimple(document.body);
   const nodeRanges = buildNodeRanges(textNodes);
   const text = textNodes.map(n => n.textContent).join('');
-  
+
   return {
     text,
     nodeRanges,

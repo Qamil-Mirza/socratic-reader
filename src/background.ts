@@ -23,12 +23,14 @@ import type {
  */
 async function handleAnalyzeChunk(msg: AnalyzeChunkMessage): Promise<AnalyzeChunkResponse> {
   try {
+    console.log(`[Socratic Reader] Analyzing chunk ${msg.chunkIndex}, length: ${msg.chunkText.length}`);
     const config = await getConfig();
     const result = await callLLM(msg.chunkText, config);
+    console.log(`[Socratic Reader] Chunk ${msg.chunkIndex} analyzed, found ${result.highlights.length} highlights`);
     return { highlights: result.highlights };
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
-    console.error('[Socratic Reader] Analysis error:', error);
+    console.error(`[Socratic Reader] Chunk ${msg.chunkIndex} analysis error:`, error, e);
     return { error };
   }
 }
@@ -49,14 +51,20 @@ chrome.runtime.onMessage.addListener(
     if (msg.action === 'ANALYZE_CHUNK') {
       handleAnalyzeChunk(msg as unknown as AnalyzeChunkMessage)
         .then(sendResponse)
-        .catch((e) => sendResponse({ error: String(e) }));
+        .catch((e) => {
+          console.error('[Socratic Reader] Unhandled error in ANALYZE_CHUNK:', e);
+          sendResponse({ error: String(e) });
+        });
       return true; // Async response
     }
 
     if (msg.action === 'TEST_CONNECTION') {
       handleTestConnection(msg as unknown as TestConnectionMessage)
         .then(sendResponse)
-        .catch((e) => sendResponse({ success: false, error: String(e) }));
+        .catch((e) => {
+          console.error('[Socratic Reader] Unhandled error in TEST_CONNECTION:', e);
+          sendResponse({ success: false, error: String(e) });
+        });
       return true; // Async response
     }
 
