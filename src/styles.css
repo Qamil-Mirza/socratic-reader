@@ -61,12 +61,85 @@
   color: var(--sr-text);
   display: flex;
   flex-direction: column;
-  transition: right 0.3s ease;
+  transition: right 0.3s ease, left 0.3s ease, top 0.3s ease, transform 0.3s ease, width 0.3s ease;
   box-sizing: border-box;
 }
 
 #socratic-reader-overlay.visible {
   right: 0;
+}
+
+/* Docking: Left */
+#socratic-reader-overlay.dock-left {
+  right: auto;
+  left: calc(-1 * var(--sr-overlay-width) - 20px);
+  border-left: none;
+  border-right: 1px solid var(--sr-border);
+  box-shadow: 4px 0 16px var(--sr-shadow);
+}
+
+#socratic-reader-overlay.dock-left.visible {
+  left: 0;
+  right: auto;
+}
+
+/* Docking: Floating */
+#socratic-reader-overlay.dock-float {
+  top: 50%;
+  right: 20px;
+  height: auto;
+  max-height: 80vh;
+  transform: translateY(-50%);
+  border-radius: var(--sr-radius);
+  border: 1px solid var(--sr-border);
+  box-shadow: 0 8px 32px var(--sr-shadow);
+}
+
+#socratic-reader-overlay.dock-float.visible {
+  right: 20px;
+}
+
+/* Minimized State */
+#socratic-reader-overlay.minimized {
+  width: 48px;
+  overflow: hidden;
+}
+
+#socratic-reader-overlay.minimized .sr-title,
+#socratic-reader-overlay.minimized .sr-highlights-list,
+#socratic-reader-overlay.minimized .sr-highlight-nav,
+#socratic-reader-overlay.minimized .sr-progress,
+#socratic-reader-overlay.minimized .sr-error,
+#socratic-reader-overlay.minimized .sr-empty,
+#socratic-reader-overlay.minimized .sr-cache-notice,
+#socratic-reader-overlay.minimized .sr-keyboard-hint,
+#socratic-reader-overlay.minimized .sr-reanalyze-btn,
+#socratic-reader-overlay.minimized .sr-close-btn,
+#socratic-reader-overlay.minimized .sr-dock-btn {
+  display: none;
+}
+
+#socratic-reader-overlay.minimized .sr-header {
+  padding: 12px;
+  justify-content: center;
+  border: none;
+}
+
+#socratic-reader-overlay.minimized .sr-header-actions {
+  gap: 0;
+}
+
+#socratic-reader-overlay.minimized .sr-minimize-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 20px;
+  background: var(--sr-green);
+  color: white;
+  border-radius: var(--sr-radius-sm);
+}
+
+#socratic-reader-overlay.minimized .sr-minimize-btn:hover {
+  background: var(--sr-green-dark);
 }
 
 #socratic-reader-overlay * {
@@ -118,7 +191,10 @@
   gap: 4px;
 }
 
-#socratic-reader-overlay .sr-reanalyze-btn {
+/* Icon Buttons */
+#socratic-reader-overlay .sr-reanalyze-btn,
+#socratic-reader-overlay .sr-minimize-btn,
+#socratic-reader-overlay .sr-dock-btn {
   width: 32px;
   height: 32px;
   border: none;
@@ -137,6 +213,21 @@
   background: var(--sr-border);
   color: var(--sr-green-dark);
   transform: rotate(180deg);
+}
+
+#socratic-reader-overlay .sr-minimize-btn:hover,
+#socratic-reader-overlay .sr-dock-btn:hover {
+  background: var(--sr-border);
+  color: var(--sr-text);
+}
+
+#socratic-reader-overlay .sr-minimize-btn {
+  font-size: 24px;
+  line-height: 1;
+}
+
+#socratic-reader-overlay .sr-dock-btn {
+  font-size: 16px;
 }
 
 /* Cache Notice */
@@ -272,6 +363,42 @@
 #socratic-reader-overlay .sr-highlight-content {
   padding: 16px;
   border-top: 1px solid var(--sr-border);
+  max-height: 1000px;
+  overflow: hidden;
+  transition: max-height 0.3s ease, opacity 0.3s ease;
+  opacity: 1;
+}
+
+#socratic-reader-overlay .sr-highlight-item.collapsed .sr-highlight-content {
+  max-height: 0;
+  opacity: 0;
+  padding: 0 16px;
+}
+
+#socratic-reader-overlay .sr-highlight-header::after {
+  content: '▼';
+  margin-left: auto;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--sr-text-secondary);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+#socratic-reader-overlay .sr-highlight-item.collapsed .sr-highlight-header::after {
+  transform: rotate(-90deg);
+}
+
+#socratic-reader-overlay .sr-highlight-number {
+  cursor: pointer;
+  transition: background-color var(--sr-transition), transform var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-highlight-number:hover {
+  background: var(--sr-green-dark);
+  transform: scale(1.1);
 }
 
 #socratic-reader-overlay .sr-reason,
@@ -409,4 +536,56 @@
 
 #socratic-reader-overlay .sr-highlights-list::-webkit-scrollbar-thumb:hover {
   background: var(--sr-text-secondary);
+}
+
+/* =============================================================================
+   Hover Tooltips
+   ============================================================================= */
+
+.socratic-highlight-tooltip {
+  position: absolute;
+  background: var(--sr-text);
+  color: white;
+  padding: 8px 12px;
+  border-radius: var(--sr-radius-sm);
+  font-size: 13px;
+  max-width: 300px;
+  z-index: 2147483648;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.socratic-highlight-tooltip.visible {
+  opacity: 1;
+}
+
+.socratic-highlight-tooltip::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--sr-text);
+}
+
+/* Keyboard Shortcut Hint */
+#socratic-reader-overlay .sr-keyboard-hint {
+  font-size: 11px;
+  color: var(--sr-text-secondary);
+  text-align: center;
+  padding: 4px 8px;
+  background: var(--sr-bg-dark);
+  border-top: 1px solid var(--sr-border);
+}
+
+#socratic-reader-overlay .sr-keyboard-hint kbd {
+  background: white;
+  border: 1px solid var(--sr-border);
+  border-radius: 3px;
+  padding: 2px 6px;
+  font-family: monospace;
+  font-size: 11px;
 }

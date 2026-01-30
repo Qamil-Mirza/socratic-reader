@@ -138,6 +138,12 @@ let overlayElement: HTMLElement | null = null;
 let lastContentHash: string = '';
 let isFromCache: boolean = false;
 
+// Overlay UI state
+type DockPosition = 'right' | 'left' | 'float';
+let overlayDockPosition: DockPosition = 'right';
+let overlayMinimized: boolean = false;
+let tooltipElement: HTMLElement | null = null;
+
 // =============================================================================
 // Robust Text Anchoring
 // =============================================================================
@@ -1025,6 +1031,8 @@ function createOverlay(): HTMLElement {
     <header class="sr-header">
       <h2 class="sr-title">Socratic Reader</h2>
       <div class="sr-header-actions">
+        <button class="sr-dock-btn" aria-label="Change dock position" title="Dock: Right">⇄</button>
+        <button class="sr-minimize-btn" aria-label="Minimize" title="Minimize (keep open)">−</button>
         <button class="sr-reanalyze-btn" aria-label="Re-analyze" title="Re-analyze page">↻</button>
         <button class="sr-close-btn" aria-label="Close">&times;</button>
       </div>
@@ -1047,14 +1055,19 @@ function createOverlay(): HTMLElement {
       <span class="sr-counter">0/0</span>
       <button class="sr-nav-btn sr-next" aria-label="Next highlight">Next &rarr;</button>
     </nav>
+    <div class="sr-keyboard-hint">
+      <kbd>Ctrl+Shift+S</kbd> to toggle | Click header to collapse | Click number to scroll
+    </div>
   `;
-  
+
   // Event listeners
   overlay.querySelector('.sr-close-btn')?.addEventListener('click', hideOverlay);
+  overlay.querySelector('.sr-minimize-btn')?.addEventListener('click', toggleMinimize);
+  overlay.querySelector('.sr-dock-btn')?.addEventListener('click', cycleDockPosition);
   overlay.querySelector('.sr-reanalyze-btn')?.addEventListener('click', handleReanalyze);
   overlay.querySelector('.sr-prev')?.addEventListener('click', () => navigateHighlight(-1));
   overlay.querySelector('.sr-next')?.addEventListener('click', () => navigateHighlight(1));
-  
+
   return overlay;
 }
 
@@ -1075,6 +1088,7 @@ function showOverlay(): void {
   if (!overlayElement) {
     overlayElement = createOverlay();
     document.body.appendChild(overlayElement);
+    restoreDockPosition();
   }
   overlayElement.classList.add('visible');
 }
@@ -1101,6 +1115,111 @@ function toggleOverlay(): void {
   } else {
     showOverlay();
     startAnalysis();
+  }
+}
+
+/**
+ * Toggle minimize state
+ */
+function toggleMinimize(): void {
+  if (!overlayElement) return;
+
+  overlayMinimized = !overlayMinimized;
+  overlayElement.classList.toggle('minimized', overlayMinimized);
+
+  const minimizeBtn = overlayElement.querySelector('.sr-minimize-btn') as HTMLButtonElement | null;
+  if (minimizeBtn) {
+    // Arrow points in the direction the overlay will expand
+    const expandIcon = overlayDockPosition === 'left' ? '▶' : '◀';
+    minimizeBtn.textContent = overlayMinimized ? expandIcon : '−';
+    minimizeBtn.setAttribute('aria-label', overlayMinimized ? 'Expand overlay' : 'Minimize overlay');
+    minimizeBtn.title = overlayMinimized ? 'Expand overlay' : 'Minimize (keep open)';
+  }
+
+  // Save minimize state
+  try {
+    localStorage.setItem('socratic-reader-minimized', String(overlayMinimized));
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+}
+
+/**
+ * Cycle through dock positions: right → left → float → right
+ */
+function cycleDockPosition(): void {
+  if (!overlayElement) return;
+
+  // Remove current dock class
+  overlayElement.classList.remove('dock-right', 'dock-left', 'dock-float');
+
+  // Cycle to next position
+  if (overlayDockPosition === 'right') {
+    overlayDockPosition = 'left';
+  } else if (overlayDockPosition === 'left') {
+    overlayDockPosition = 'float';
+  } else {
+    overlayDockPosition = 'right';
+  }
+
+  // Apply new dock class
+  if (overlayDockPosition !== 'right') {
+    overlayElement.classList.add(`dock-${overlayDockPosition}`);
+  }
+
+  // Update button tooltip
+  const dockBtn = overlayElement.querySelector('.sr-dock-btn') as HTMLButtonElement | null;
+  if (dockBtn) {
+    const positions = { right: 'Right', left: 'Left', float: 'Floating' };
+    dockBtn.title = `Dock: ${positions[overlayDockPosition]}`;
+  }
+
+  // Update minimize button icon if currently minimized
+  if (overlayMinimized) {
+    const minimizeBtn = overlayElement.querySelector('.sr-minimize-btn') as HTMLButtonElement | null;
+    if (minimizeBtn) {
+      const expandIcon = overlayDockPosition === 'left' ? '▶' : '◀';
+      minimizeBtn.textContent = expandIcon;
+    }
+  }
+
+  // Save preference
+  try {
+    localStorage.setItem('socratic-reader-dock', overlayDockPosition);
+  } catch (e) {
+    // Ignore localStorage errors
+  }
+}
+
+/**
+ * Restore saved dock position and minimize state
+ */
+function restoreDockPosition(): void {
+  try {
+    // Restore dock position
+    const saved = localStorage.getItem('socratic-reader-dock') as DockPosition | null;
+    if (saved && ['right', 'left', 'float'].includes(saved)) {
+      overlayDockPosition = saved;
+      if (overlayElement && saved !== 'right') {
+        overlayElement.classList.add(`dock-${saved}`);
+      }
+    }
+
+    // Restore minimize state
+    const minimized = localStorage.getItem('socratic-reader-minimized');
+    if (minimized === 'true') {
+      overlayMinimized = true;
+      overlayElement?.classList.add('minimized');
+      const minimizeBtn = overlayElement?.querySelector('.sr-minimize-btn') as HTMLButtonElement | null;
+      if (minimizeBtn) {
+        const expandIcon = overlayDockPosition === 'left' ? '▶' : '◀';
+        minimizeBtn.textContent = expandIcon;
+        minimizeBtn.title = 'Expand overlay';
+        minimizeBtn.setAttribute('aria-label', 'Expand overlay');
+      }
+    }
+  } catch (e) {
+    // Ignore localStorage errors
   }
 }
 
@@ -1231,6 +1350,20 @@ async function renderHighlightsList(): Promise<void> {
   // Add event listeners
   list.querySelectorAll('.sr-highlight-header').forEach((header) => {
     header.addEventListener('click', (e) => {
+      const item = (e.currentTarget as HTMLElement).closest('.sr-highlight-item');
+
+      // Normal click: toggle collapse
+      item?.classList.toggle('collapsed');
+
+      // Prevent default to avoid text selection
+      e.preventDefault();
+    });
+  });
+
+  // Click on highlight number to select/scroll to highlight
+  list.querySelectorAll('.sr-highlight-number').forEach((num) => {
+    num.addEventListener('click', (e) => {
+      e.stopPropagation(); // Don't trigger header collapse
       const item = (e.currentTarget as HTMLElement).closest('.sr-highlight-item');
       const index = parseInt(item?.getAttribute('data-index') ?? '0', 10);
       selectHighlight(index);
@@ -1460,14 +1593,17 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
         
         // Apply cached highlights
         applyCachedHighlights(cacheResult.highlights, chunks);
-        
+
         // Display results
         overlayState = 'DISPLAYING';
         updateOverlayState();
-        
+
         if (currentHighlights.length > 0) {
           selectHighlight(0);
         }
+
+        // Setup hover tooltips
+        setupHighlightHoverListeners();
         return;
       }
     } catch (e) {
@@ -1604,11 +1740,14 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
   // Display results
   overlayState = 'DISPLAYING';
   updateOverlayState();
-  
+
   // Select first highlight
   if (currentHighlights.length > 0) {
     selectHighlight(0);
   }
+
+  // Setup hover tooltips
+  setupHighlightHoverListeners();
   
   // Check if any highlights failed to apply
   const failedHighlights = currentHighlights.filter(h => !h.range);
@@ -1711,10 +1850,118 @@ async function restoreHighlights(): Promise<void> {
 }
 
 // =============================================================================
+// Keyboard Shortcuts & Hover Tooltips
+// =============================================================================
+
+/**
+ * Handle keyboard shortcuts
+ */
+function handleKeyboardShortcut(e: KeyboardEvent): void {
+  // Ctrl+Shift+S (or Cmd+Shift+S on Mac) to toggle overlay
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'S') {
+    e.preventDefault();
+    toggleOverlay();
+  }
+
+  // Escape to close overlay
+  if (e.key === 'Escape' && overlayElement?.classList.contains('visible')) {
+    e.preventDefault();
+    hideOverlay();
+  }
+}
+
+/**
+ * Create and show hover tooltip
+ */
+function showHighlightTooltip(highlight: HTMLElement, text: string): void {
+  // Remove existing tooltip
+  if (tooltipElement) {
+    document.body.removeChild(tooltipElement);
+  }
+
+  // Create tooltip
+  tooltipElement = document.createElement('div');
+  tooltipElement.className = 'socratic-highlight-tooltip';
+  tooltipElement.textContent = text;
+  document.body.appendChild(tooltipElement);
+
+  // Position tooltip
+  const rect = highlight.getBoundingClientRect();
+  const tooltipRect = tooltipElement.getBoundingClientRect();
+
+  let top = rect.top - tooltipRect.height - 10;
+  let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
+
+  // Keep tooltip in viewport
+  if (top < 10) {
+    top = rect.bottom + 10;
+  }
+  if (left < 10) {
+    left = 10;
+  }
+  if (left + tooltipRect.width > window.innerWidth - 10) {
+    left = window.innerWidth - tooltipRect.width - 10;
+  }
+
+  tooltipElement.style.top = `${top + window.scrollY}px`;
+  tooltipElement.style.left = `${left + window.scrollX}px`;
+
+  // Fade in
+  requestAnimationFrame(() => {
+    tooltipElement?.classList.add('visible');
+  });
+}
+
+/**
+ * Hide hover tooltip
+ */
+function hideHighlightTooltip(): void {
+  if (tooltipElement) {
+    tooltipElement.classList.remove('visible');
+    setTimeout(() => {
+      if (tooltipElement && document.body.contains(tooltipElement)) {
+        document.body.removeChild(tooltipElement);
+      }
+      tooltipElement = null;
+    }, 200);
+  }
+}
+
+/**
+ * Setup highlight hover listeners
+ */
+function setupHighlightHoverListeners(): void {
+  // Add hover listeners to all highlighted elements
+  document.querySelectorAll(`.${HIGHLIGHT_CLASS}`).forEach((highlight) => {
+    const el = highlight as HTMLElement;
+    let hoverTimeout: number;
+
+    el.addEventListener('mouseenter', () => {
+      hoverTimeout = window.setTimeout(() => {
+        const highlightId = el.dataset.highlightId;
+        const highlightData = currentHighlights.find(h => h.id === highlightId);
+        if (highlightData) {
+          const preview = `${highlightData.question}\n\n${highlightData.explanation.slice(0, 150)}...`;
+          showHighlightTooltip(el, preview);
+        }
+      }, 500); // Show after 500ms hover
+    });
+
+    el.addEventListener('mouseleave', () => {
+      clearTimeout(hoverTimeout);
+      hideHighlightTooltip();
+    });
+  });
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
 console.log('[Socratic Reader] Content script loaded');
+
+// Add keyboard shortcut listener
+document.addEventListener('keydown', handleKeyboardShortcut);
 
 // Restore saved highlights when page loads
 if (document.readyState === 'loading') {
