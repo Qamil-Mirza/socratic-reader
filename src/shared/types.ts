@@ -1,3 +1,5 @@
+import type { TextAnchor } from './anchoring';
+
 // LLM Provider types
 export type Provider = 'openai' | 'gemini' | 'ollama';
 
@@ -28,6 +30,7 @@ export interface Highlight {
   reason: string;
   question: string;
   explanation: string;
+  anchor?: TextAnchor; // Robust anchor for re-mapping after reload
 }
 
 // Analysis result from LLM
@@ -44,6 +47,7 @@ export interface SavedNote {
   text: string; // Short snippet for reference (not full page text)
   note: string;
   createdAt: number;
+  anchor?: TextAnchor; // Robust anchor for re-mapping after reload
 }
 
 // Node range for DOM offset mapping

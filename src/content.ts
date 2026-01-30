@@ -25,6 +25,7 @@ interface ProcessedHighlight extends Highlight {
   text: string;
   range: Range | null;
   chunkIndex: number;
+  anchor?: TextAnchor; // Robust anchor for re-mapping after reload
 }
 
 interface SavedNote {
@@ -35,11 +36,28 @@ interface SavedNote {
   text: string;
   note: string;
   createdAt: number;
+  anchor?: TextAnchor; // Robust anchor for re-mapping after reload
 }
 
 interface AnalyzeChunkResponse {
   highlights?: Highlight[];
   error?: string;
+}
+
+// Robust text anchoring for persistent highlights
+interface TextAnchor {
+  exact: string;           // The exact text being anchored
+  prefix: string;          // Text before (for disambiguation)
+  suffix: string;          // Text after (for disambiguation)
+  start: number;           // Character offset from document start (fallback)
+  end: number;             // Character offset from document end (fallback)
+}
+
+interface AnchorResult {
+  range: Range;
+  exact: string;
+  score: number;           // Confidence score 0-1
+  method: 'exact' | 'fuzzy' | 'position';
 }
 
 type OverlayState = 'IDLE' | 'EXTRACTING' | 'ANALYZING' | 'DISPLAYING' | 'ERROR';
@@ -110,6 +128,313 @@ let currentHighlightIndex = 0;
 let overlayElement: HTMLElement | null = null;
 let lastContentHash: string = '';
 let isFromCache: boolean = false;
+
+// =============================================================================
+// Robust Text Anchoring
+// =============================================================================
+
+const CONTEXT_LENGTH = 32;  // Characters of prefix/suffix to capture
+const FUZZY_THRESHOLD = 0.8; // Minimum similarity for fuzzy match
+
+/**
+ * Creates a robust anchor descriptor from a DOM Range
+ */
+function describeRange(range: Range, root: Node = document.body): TextAnchor {
+  const exact = range.toString();
+  const { prefix, suffix } = getContext(range, CONTEXT_LENGTH, root);
+  const { start, end } = getTextPosition(range, root);
+
+  return {
+    exact,
+    prefix,
+    suffix,
+    start,
+    end
+  };
+}
+
+/**
+ * Re-anchors a persisted descriptor to the current DOM
+ */
+async function anchorToRange(descriptor: TextAnchor, root: Node = document.body): Promise<AnchorResult | null> {
+  // Strategy 1: Try exact quote match with context
+  const exactMatch = findQuote(descriptor, root);
+  if (exactMatch) {
+    return {
+      range: exactMatch,
+      exact: descriptor.exact,
+      score: 1.0,
+      method: 'exact'
+    };
+  }
+
+  // Strategy 2: Try fuzzy quote match (handles minor text changes)
+  const fuzzyMatch = findFuzzyQuote(descriptor, root);
+  if (fuzzyMatch && fuzzyMatch.score >= FUZZY_THRESHOLD) {
+    return fuzzyMatch;
+  }
+
+  // Strategy 3: Fall back to position-based (least reliable)
+  const positionMatch = findByPosition(descriptor, root);
+  if (positionMatch) {
+    return {
+      range: positionMatch,
+      exact: positionMatch.toString(),
+      score: 0.5,
+      method: 'position'
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Gets surrounding context for quote-based anchoring
+ */
+function getContext(range: Range, contextLength: number, root: Node): { prefix: string; suffix: string } {
+  const textNodes = getTextNodesForAnchoring(root);
+  const text = textNodes.map(n => n.textContent).join('');
+
+  const rangeStart = getTextOffsetForNode(range.startContainer, range.startOffset, textNodes);
+  const rangeEnd = getTextOffsetForNode(range.endContainer, range.endOffset, textNodes);
+
+  const prefix = text.slice(Math.max(0, rangeStart - contextLength), rangeStart);
+  const suffix = text.slice(rangeEnd, rangeEnd + contextLength);
+
+  return { prefix, suffix };
+}
+
+/**
+ * Gets text position (character offset) of a range
+ */
+function getTextPosition(range: Range, root: Node): { start: number; end: number } {
+  const textNodes = getTextNodesForAnchoring(root);
+  const start = getTextOffsetForNode(range.startContainer, range.startOffset, textNodes);
+  const end = getTextOffsetForNode(range.endContainer, range.endOffset, textNodes);
+  return { start, end };
+}
+
+/**
+ * Calculates character offset from root to a position in a node
+ */
+function getTextOffsetForNode(node: Node, offset: number, textNodes: Text[]): number {
+  let currentOffset = 0;
+
+  for (const textNode of textNodes) {
+    if (textNode === node) {
+      return currentOffset + offset;
+    }
+    currentOffset += (textNode.textContent || '').length;
+  }
+
+  return currentOffset;
+}
+
+/**
+ * Finds exact quote match using prefix/suffix for disambiguation
+ */
+function findQuote(descriptor: TextAnchor, root: Node): Range | null {
+  const { exact, prefix, suffix } = descriptor;
+  const textNodes = getTextNodesForAnchoring(root);
+  const fullText = textNodes.map(n => n.textContent).join('');
+
+  // Find all occurrences of exact text
+  const occurrences: number[] = [];
+  let index = fullText.indexOf(exact);
+  while (index !== -1) {
+    occurrences.push(index);
+    index = fullText.indexOf(exact, index + 1);
+  }
+
+  if (occurrences.length === 0) return null;
+
+  // If only one match, return it
+  if (occurrences.length === 1) {
+    return createRangeFromOffset(occurrences[0], occurrences[0] + exact.length, textNodes);
+  }
+
+  // Use context to disambiguate
+  for (const start of occurrences) {
+    const actualPrefix = fullText.slice(Math.max(0, start - CONTEXT_LENGTH), start);
+    const actualSuffix = fullText.slice(start + exact.length, start + exact.length + CONTEXT_LENGTH);
+
+    if (actualPrefix.endsWith(prefix) && actualSuffix.startsWith(suffix)) {
+      return createRangeFromOffset(start, start + exact.length, textNodes);
+    }
+  }
+
+  // If no context match, return first occurrence as fallback
+  return createRangeFromOffset(occurrences[0], occurrences[0] + exact.length, textNodes);
+}
+
+/**
+ * Fuzzy quote matching using Levenshtein distance for robustness
+ */
+function findFuzzyQuote(descriptor: TextAnchor, root: Node): AnchorResult | null {
+  const { exact, prefix, suffix } = descriptor;
+  const textNodes = getTextNodesForAnchoring(root);
+  const fullText = textNodes.map(n => n.textContent).join('');
+
+  const searchLength = exact.length;
+  let bestMatch: { start: number; score: number; text: string } | null = null;
+
+  // Slide window across text
+  for (let i = 0; i < fullText.length - searchLength + 50; i++) {
+    const candidate = fullText.slice(i, Math.min(i + searchLength + 50, fullText.length));
+    const score = similarity(exact, candidate.slice(0, searchLength));
+
+    if (score > FUZZY_THRESHOLD && (!bestMatch || score > bestMatch.score)) {
+      const actualPrefix = fullText.slice(Math.max(0, i - CONTEXT_LENGTH), i);
+      const actualSuffix = fullText.slice(i + searchLength, i + searchLength + CONTEXT_LENGTH);
+
+      const contextScore = (similarity(prefix, actualPrefix) + similarity(suffix, actualSuffix)) / 2;
+
+      if (contextScore > 0.7) {
+        bestMatch = { start: i, score, text: candidate.slice(0, searchLength) };
+      }
+    }
+  }
+
+  if (!bestMatch) return null;
+
+  const range = createRangeFromOffset(bestMatch.start, bestMatch.start + searchLength, textNodes);
+  if (!range) return null;
+
+  return {
+    range,
+    exact: bestMatch.text,
+    score: bestMatch.score,
+    method: 'fuzzy'
+  };
+}
+
+/**
+ * Position-based anchoring (least reliable, but fast)
+ */
+function findByPosition(descriptor: TextAnchor, root: Node): Range | null {
+  const textNodes = getTextNodesForAnchoring(root);
+  const fullText = textNodes.map(n => n.textContent).join('');
+
+  if (descriptor.start >= fullText.length || descriptor.end > fullText.length) {
+    return null;
+  }
+
+  return createRangeFromOffset(descriptor.start, descriptor.end, textNodes);
+}
+
+/**
+ * Creates a DOM Range from character offsets
+ */
+function createRangeFromOffset(start: number, end: number, textNodes: Text[]): Range | null {
+  let currentOffset = 0;
+  let startNode: Text | null = null;
+  let startOffset = 0;
+  let endNode: Text | null = null;
+  let endOffset = 0;
+
+  for (const node of textNodes) {
+    const nodeLength = (node.textContent || '').length;
+
+    if (!startNode && currentOffset + nodeLength > start) {
+      startNode = node;
+      startOffset = start - currentOffset;
+    }
+
+    if (!endNode && currentOffset + nodeLength >= end) {
+      endNode = node;
+      endOffset = end - currentOffset;
+      break;
+    }
+
+    currentOffset += nodeLength;
+  }
+
+  if (!startNode || !endNode) return null;
+
+  const range = document.createRange();
+  try {
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
+    return range;
+  } catch (e) {
+    console.error('[Socratic Reader] Failed to create range:', e);
+    return null;
+  }
+}
+
+/**
+ * Gets all text nodes under a root (for anchoring)
+ */
+function getTextNodesForAnchoring(root: Node): Text[] {
+  const walker = document.createTreeWalker(
+    root,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode: (node) => {
+        const parent = node.parentElement;
+        if (!parent) return NodeFilter.FILTER_REJECT;
+
+        const style = window.getComputedStyle(parent);
+        if (style.display === 'none' || style.visibility === 'hidden') {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        if (!node.textContent?.trim()) {
+          return NodeFilter.FILTER_REJECT;
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  const nodes: Text[] = [];
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    nodes.push(node as Text);
+  }
+
+  return nodes;
+}
+
+/**
+ * Calculates similarity between two strings (0-1)
+ */
+function similarity(s1: string, s2: string): number {
+  const longer = s1.length > s2.length ? s1 : s2;
+  const shorter = s1.length > s2.length ? s2 : s1;
+
+  if (longer.length === 0) return 1.0;
+
+  const distance = levenshtein(longer, shorter);
+  return (longer.length - distance) / longer.length;
+}
+
+/**
+ * Levenshtein distance implementation
+ */
+function levenshtein(s1: string, s2: string): number {
+  const costs: number[] = [];
+
+  for (let i = 0; i <= s2.length; i++) {
+    let lastValue = i;
+    for (let j = 0; j <= s1.length; j++) {
+      if (i === 0) {
+        costs[j] = j;
+      } else if (j > 0) {
+        let newValue = costs[j - 1];
+        if (s1.charAt(j - 1) !== s2.charAt(i - 1)) {
+          newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
+        }
+        costs[j - 1] = lastValue;
+        lastValue = newValue;
+      }
+    }
+    if (i > 0) costs[s1.length] = lastValue;
+  }
+
+  return costs[s1.length];
+}
 
 // =============================================================================
 // Text Extraction
@@ -995,8 +1320,9 @@ async function handleSaveNote(e: Event): Promise<void> {
     text: highlight.text.slice(0, 100), // Short snippet only
     note: noteText,
     createdAt: Date.now(),
+    anchor: highlight.anchor, // Include robust anchor for re-mapping
   };
-  
+
   await saveNote(note);
   
   // Update button state
@@ -1061,6 +1387,9 @@ function applyCachedHighlights(
     const text = chunk.text.slice(localStart, localEnd);
     const range = offsetToRange(chunk, localStart, localEnd);
 
+    // Create robust anchor for persistent re-mapping
+    const anchor = range ? describeRange(range, document.body) : undefined;
+
     const processedHighlight: ProcessedHighlight = {
       ...h,
       start: localStart,
@@ -1069,6 +1398,7 @@ function applyCachedHighlights(
       text,
       range,
       chunkIndex,
+      anchor,
     };
 
     processed.push(processedHighlight);
@@ -1186,12 +1516,16 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
           const text = chunks[i].text.slice(h.start, h.end);
           const range = offsetToRange(chunks[i], h.start, h.end);
 
+          // Create robust anchor for persistent re-mapping
+          const anchor = range ? describeRange(range, document.body) : undefined;
+
           const processedHighlight: ProcessedHighlight = {
             ...h,
             id,
             text,
             range,
             chunkIndex: i,
+            anchor,
           };
 
           processedForChunk.push(processedHighlight);
@@ -1285,7 +1619,91 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // =============================================================================
+// Highlight Restoration
+// =============================================================================
+
+/**
+ * Restore saved highlights on page load using robust anchoring
+ */
+async function restoreHighlights(): Promise<void> {
+  try {
+    const pageUrl = window.location.href;
+    const savedNotes = await getNotes(pageUrl);
+
+    if (savedNotes.length === 0) {
+      console.log('[Socratic Reader] No saved highlights to restore');
+      return;
+    }
+
+    console.log(`[Socratic Reader] Restoring ${savedNotes.length} saved highlights...`);
+
+    let successCount = 0;
+    const restored: ProcessedHighlight[] = [];
+
+    for (const note of savedNotes) {
+      if (!note.anchor) {
+        console.warn(`[Socratic Reader] No anchor for highlight ${note.highlightId}, skipping`);
+        continue;
+      }
+
+      // Re-anchor using robust anchoring
+      const result = await anchorToRange(note.anchor, document.body);
+
+      if (result && result.score >= 0.7) {
+        // Apply highlight to DOM
+        applyHighlight(result.range, note.highlightId);
+
+        // Create ProcessedHighlight for reference
+        const processedHighlight: ProcessedHighlight = {
+          start: note.start,
+          end: note.end,
+          reason: '', // Not needed for restored highlights
+          question: '', // Not needed for restored highlights
+          explanation: note.note,
+          id: note.highlightId,
+          text: note.text,
+          range: result.range,
+          chunkIndex: 0, // Not relevant for restored highlights
+          anchor: note.anchor,
+        };
+
+        restored.push(processedHighlight);
+        successCount++;
+
+        const scorePercent = Math.round(result.score * 100);
+        console.log(
+          `[Socratic Reader] ✓ Re-anchored ${note.highlightId} using ${result.method} (${scorePercent}% confidence)`
+        );
+      } else {
+        console.warn(
+          `[Socratic Reader] ✗ Failed to re-anchor ${note.highlightId} (score: ${result?.score ?? 0})`
+        );
+      }
+    }
+
+    if (successCount > 0) {
+      console.log(`[Socratic Reader] Successfully restored ${successCount}/${savedNotes.length} highlights`);
+
+      // Store restored highlights for reference (they won't appear in the analysis overlay)
+      // but they'll be visible on the page
+    }
+  } catch (error) {
+    console.error('[Socratic Reader] Error restoring highlights:', error);
+  }
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
 console.log('[Socratic Reader] Content script loaded');
+
+// Restore saved highlights when page loads
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    restoreHighlights();
+  });
+} else {
+  // DOM already loaded
+  restoreHighlights();
+}
