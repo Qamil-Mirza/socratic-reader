@@ -17,7 +17,15 @@ const PROVIDER_BASE_URLS: Record<Provider, string> = {
 };
 
 // System prompt for Socratic analysis
-const SYSTEM_PROMPT = `You are a Socratic philosophy tutor. Be precise. Do not invent text. Use only the provided chunk.`;
+const SYSTEM_PROMPT = `You are a Socratic philosophy tutor assisting with reading comprehension. Your task is to help students identify key claims and interrogate them critically.
+
+Follow these rules:
+- Use ONLY the provided chunk. NEVER reference or invent text outside it.
+- Identify clear, self-contained statements that express reasoning, claims, or assertions worth examining.
+- Prefer full sentences or grammatically complete clauses that can stand alone.
+- Return only structured JSON as instructed. Do not include any natural language outside the JSON.
+
+Be precise, analytical, and strict. Do not return partial phrases or vague fragments.`;
 
 // User prompt template
 function buildUserPrompt(chunkText: string): string {
@@ -253,12 +261,12 @@ export async function callLLM(text: string, config: Config): Promise<AnalysisRes
 
       if (!response.ok) {
         const errorText = await response.text();
-        
+
         // Check for rate limiting
         if (response.status === 429) {
           throw new LLMError('Rate limited. Please wait and try again.', true);
         }
-        
+
         // Check for auth errors
         if (response.status === 401 || response.status === 403) {
           if (config.provider === 'ollama') {
@@ -271,7 +279,7 @@ export async function callLLM(text: string, config: Config): Promise<AnalysisRes
           }
           throw new LLMError('Authentication failed. Check your API key in options.');
         }
-        
+
         // Model not found (common Ollama error)
         if (response.status === 404) {
           if (config.provider === 'ollama') {
@@ -287,7 +295,7 @@ export async function callLLM(text: string, config: Config): Promise<AnalysisRes
       return parseResponse(config.provider, data);
     } catch (e) {
       lastError = e instanceof Error ? e : new Error(String(e));
-      
+
       // Don't retry non-retryable errors
       if (e instanceof LLMError && !e.retryable) {
         throw e;
@@ -295,7 +303,7 @@ export async function callLLM(text: string, config: Config): Promise<AnalysisRes
       if (e instanceof ConfigError) {
         throw e;
       }
-      
+
       // Check for network errors (Ollama not running)
       if (e instanceof TypeError && e.message.includes('fetch')) {
         if (config.provider === 'ollama') {
@@ -305,7 +313,7 @@ export async function callLLM(text: string, config: Config): Promise<AnalysisRes
         }
         throw new LLMError(`Network error: ${e.message}`);
       }
-      
+
       // Retry on other errors
       if (attempt === 0) {
         await new Promise((resolve) => setTimeout(resolve, 1000));
