@@ -1,4 +1,6 @@
 // Types inlined to avoid imports (required for programmatic injection)
+import { createSemanticChunks, type SemanticChunk } from './shared/semantic-chunking';
+
 interface NodeRange {
   node: Text;
   start: number;
@@ -10,6 +12,13 @@ interface TextChunk {
   text: string;
   nodeRanges: NodeRange[];
   globalOffset: number;
+  salience?: number; // Argument richness score (0-1)
+  salienceFactors?: {
+    argumentKeywords: number;
+    questions: number;
+    transitions: number;
+    complexity: number;
+  };
 }
 
 interface Highlight {
@@ -624,75 +633,73 @@ function extractText(): { text: string; nodeRanges: NodeRange[] } | null {
 // =============================================================================
 
 /**
- * Chunk text into ~500 word segments while preserving sentence boundaries
+ * Chunk text into semantic segments respecting sentence and paragraph boundaries
+ * Uses intelligent chunking that never cuts mid-sentence or mid-idea
  */
 export function chunkText(text: string, nodeRanges: NodeRange[]): TextChunk[] {
   const words = text.split(/\s+/);
 
+  // Handle short text that doesn't need chunking
   if (words.length <= CHUNK_WORD_LIMIT) {
     // Verify text matches nodeRanges
     const nodeText = nodeRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
     if (nodeText !== text) {
       console.warn('[Socratic Reader] Text mismatch in single chunk. Expected length:', text.length, 'Got:', nodeText.length);
     }
-    return [{ text, nodeRanges, globalOffset: 0 }];
+
+    // Calculate salience even for single chunk
+    const semanticChunks = createSemanticChunks(text, CHUNK_WORD_LIMIT, 100, 1000);
+    const salience = semanticChunks[0]?.salience ?? 0;
+    const salienceFactors = semanticChunks[0]?.salienceFactors;
+
+    return [{
+      text,
+      nodeRanges,
+      globalOffset: 0,
+      salience,
+      salienceFactors
+    }];
   }
 
+  // Use semantic chunking to get intelligent boundaries
+  const semanticChunks = createSemanticChunks(
+    text,
+    CHUNK_WORD_LIMIT,  // target: 500 words
+    200,               // min: 200 words
+    800                // max: 800 words
+  );
+
+  // Map semantic chunks to TextChunks with DOM node ranges
   const chunks: TextChunk[] = [];
-  let currentChunkStart = 0;
-  let wordCount = 0;
-  let lastSentenceEnd = 0;
 
-  for (let i = 0; i < text.length; i++) {
-    if (/\s/.test(text[i])) {
-      wordCount++;
+  for (const semanticChunk of semanticChunks) {
+    const chunkStart = semanticChunk.start;
+    const chunkEnd = semanticChunk.end;
+    const chunkText = semanticChunk.text;
+
+    // Get the node ranges for this chunk
+    const chunkRanges = getNodeRangesForOffset(nodeRanges, chunkStart, chunkEnd);
+
+    // Verify this chunk's text matches its nodeRanges
+    const nodeText = chunkRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
+    if (nodeText !== chunkText) {
+      console.warn('[Socratic Reader] Text mismatch in semantic chunk. Expected:', chunkText.length, 'chars, got:', nodeText.length);
     }
 
-    // Track sentence boundaries
-    if (/[.!?]/.test(text[i]) && (i + 1 >= text.length || /\s/.test(text[i + 1]))) {
-      lastSentenceEnd = i + 1;
-    }
-
-    // Time to split
-    if (wordCount >= CHUNK_WORD_LIMIT && lastSentenceEnd > currentChunkStart) {
-      const chunkText = text.slice(currentChunkStart, lastSentenceEnd);
-      const chunkRanges = getNodeRangesForOffset(nodeRanges, currentChunkStart, lastSentenceEnd);
-
-      // Verify this chunk's text matches its nodeRanges
-      const nodeText = chunkRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
-      if (nodeText !== chunkText) {
-        console.warn('[Socratic Reader] Text mismatch in chunk. Expected:', chunkText.length, 'chars, got:', nodeText.length);
-      }
-
-      chunks.push({
-        text: chunkText,
-        nodeRanges: chunkRanges,
-        globalOffset: currentChunkStart,
-      });
-
-      currentChunkStart = lastSentenceEnd;
-      wordCount = 0;
-    }
+    chunks.push({
+      text: chunkText,
+      nodeRanges: chunkRanges,
+      globalOffset: chunkStart,
+      salience: semanticChunk.salience,
+      salienceFactors: semanticChunk.salienceFactors
+    });
   }
 
-  // Add remaining text
-  if (currentChunkStart < text.length) {
-    const chunkText = text.slice(currentChunkStart);
-    if (chunkText) {
-      const chunkRanges = getNodeRangesForOffset(nodeRanges, currentChunkStart, text.length);
-
-      // Verify this chunk's text matches its nodeRanges
-      const nodeText = chunkRanges.map(nr => nr.node.textContent?.slice(nr.start, nr.end) ?? '').join('');
-      if (nodeText !== chunkText) {
-        console.warn('[Socratic Reader] Text mismatch in final chunk. Expected:', chunkText.length, 'chars, got:', nodeText.length);
-      }
-
-      chunks.push({
-        text: chunkText,
-        nodeRanges: chunkRanges,
-        globalOffset: currentChunkStart,
-      });
-    }
+  // Log salience info for debugging
+  if (chunks.length > 0) {
+    const avgSalience = chunks.reduce((sum, c) => sum + (c.salience ?? 0), 0) / chunks.length;
+    const maxSalience = Math.max(...chunks.map(c => c.salience ?? 0));
+    console.log(`[Socratic Reader] Created ${chunks.length} semantic chunks (avg salience: ${avgSalience.toFixed(2)}, max: ${maxSalience.toFixed(2)})`);
   }
 
   return chunks;
@@ -1467,16 +1474,27 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
       console.warn('[Socratic Reader] Cache check failed:', e);
     }
   }
-  
+
   // Analyze chunks
   overlayState = 'ANALYZING';
   updateOverlayState();
-  
+
+  // Optional: Prioritize chunks by salience (analyze argument-rich chunks first)
+  // Uncomment to enable salience-based prioritization:
+  // const priorityOrder = chunks
+  //   .map((chunk, index) => ({ index, salience: chunk.salience ?? 0 }))
+  //   .sort((a, b) => b.salience - a.salience)
+  //   .map(item => item.index);
+
+  // For now, analyze in document order
+  const priorityOrder = chunks.map((_, index) => index);
+
   let highlightCounter = 0;
   const allHighlightsForCache: Highlight[] = [];
-  
-  for (let i = 0; i < chunks.length; i++) {
-    updateProgress(i + 1, chunks.length);
+
+  for (let orderIdx = 0; orderIdx < priorityOrder.length; orderIdx++) {
+    const i = priorityOrder[orderIdx];
+    updateProgress(orderIdx + 1, chunks.length);
     
     try {
       const response = await chrome.runtime.sendMessage({
