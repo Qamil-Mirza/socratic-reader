@@ -144,6 +144,21 @@ let overlayDockPosition: DockPosition = 'right';
 let overlayMinimized: boolean = false;
 let tooltipElement: HTMLElement | null = null;
 
+// Drag state
+let isDragging: boolean = false;
+let dragStartX: number = 0;
+let dragStartY: number = 0;
+let overlayStartX: number = 0;
+let overlayStartY: number = 0;
+let floatingPosition: { x: number; y: number } | null = null;
+
+// Snap detection threshold (pixels from edge)
+const SNAP_THRESHOLD = 100;
+
+// Snap zone indicators
+let snapZoneLeft: HTMLElement | null = null;
+let snapZoneRight: HTMLElement | null = null;
+
 // =============================================================================
 // Robust Text Anchoring
 // =============================================================================
@@ -1056,17 +1071,37 @@ function createOverlay(): HTMLElement {
       <button class="sr-nav-btn sr-next" aria-label="Next highlight">Next &rarr;</button>
     </nav>
     <div class="sr-keyboard-hint">
-      <kbd>Ctrl+Shift+S</kbd> to toggle | Click header to collapse | Click number to scroll
+      <kbd>Ctrl+Shift+S</kbd> to toggle | Click ⇄ to change dock | Drag header to move (float mode)
     </div>
   `;
 
   // Event listeners
-  overlay.querySelector('.sr-close-btn')?.addEventListener('click', hideOverlay);
-  overlay.querySelector('.sr-minimize-btn')?.addEventListener('click', toggleMinimize);
-  overlay.querySelector('.sr-dock-btn')?.addEventListener('click', cycleDockPosition);
-  overlay.querySelector('.sr-reanalyze-btn')?.addEventListener('click', handleReanalyze);
+  overlay.querySelector('.sr-close-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hideOverlay();
+  });
+  overlay.querySelector('.sr-minimize-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMinimize();
+  });
+  overlay.querySelector('.sr-dock-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cycleDockPosition();
+  });
+  overlay.querySelector('.sr-reanalyze-btn')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    handleReanalyze();
+  });
   overlay.querySelector('.sr-prev')?.addEventListener('click', () => navigateHighlight(-1));
   overlay.querySelector('.sr-next')?.addEventListener('click', () => navigateHighlight(1));
+
+  // Drag functionality on header
+  const header = overlay.querySelector('.sr-header');
+  if (header) {
+    header.addEventListener('mousedown', (e) => handleDragStart(e as MouseEvent));
+    // Make header look draggable when in float mode
+    header.setAttribute('data-draggable', 'true');
+  }
 
   return overlay;
 }
@@ -1150,8 +1185,12 @@ function toggleMinimize(): void {
 function cycleDockPosition(): void {
   if (!overlayElement) return;
 
-  // Remove current dock class
+  // Remove current dock class and styles
   overlayElement.classList.remove('dock-right', 'dock-left', 'dock-float');
+  overlayElement.style.left = '';
+  overlayElement.style.top = '';
+  overlayElement.style.right = '';
+  overlayElement.style.transform = '';
 
   // Cycle to next position
   if (overlayDockPosition === 'right') {
@@ -1167,10 +1206,29 @@ function cycleDockPosition(): void {
     overlayElement.classList.add(`dock-${overlayDockPosition}`);
   }
 
+  // For floating mode, apply saved position or center it
+  if (overlayDockPosition === 'float') {
+    if (floatingPosition) {
+      applyFloatingPosition();
+    } else {
+      // Center on first use - wait for next frame to get correct dimensions
+      requestAnimationFrame(() => {
+        if (!overlayElement) return;
+        const rect = overlayElement.getBoundingClientRect();
+        floatingPosition = {
+          x: (window.innerWidth - rect.width) / 2,
+          y: Math.max(20, (window.innerHeight - rect.height) / 2)
+        };
+        applyFloatingPosition();
+        saveFloatingPosition();
+      });
+    }
+  }
+
   // Update button tooltip
   const dockBtn = overlayElement.querySelector('.sr-dock-btn') as HTMLButtonElement | null;
   if (dockBtn) {
-    const positions = { right: 'Right', left: 'Left', float: 'Floating' };
+    const positions = { right: 'Right', left: 'Left', float: 'Floating (drag to move)' };
     dockBtn.title = `Dock: ${positions[overlayDockPosition]}`;
   }
 
@@ -1205,6 +1263,19 @@ function restoreDockPosition(): void {
       }
     }
 
+    // Restore floating position
+    if (overlayDockPosition === 'float') {
+      const savedPos = localStorage.getItem('socratic-reader-float-position');
+      if (savedPos) {
+        try {
+          floatingPosition = JSON.parse(savedPos);
+          applyFloatingPosition();
+        } catch (e) {
+          // Invalid JSON, ignore
+        }
+      }
+    }
+
     // Restore minimize state
     const minimized = localStorage.getItem('socratic-reader-minimized');
     if (minimized === 'true') {
@@ -1220,6 +1291,223 @@ function restoreDockPosition(): void {
     }
   } catch (e) {
     // Ignore localStorage errors
+  }
+}
+
+/**
+ * Handle drag start
+ */
+function handleDragStart(e: MouseEvent): void {
+  const target = e.target as HTMLElement;
+
+  // Don't drag if clicking on buttons or interactive elements
+  if (target.tagName === 'BUTTON' || target.closest('button')) {
+    return;
+  }
+
+  // Only allow dragging in float mode
+  if (overlayDockPosition !== 'float') {
+    return;
+  }
+
+  // Don't drag if clicking on input/textarea
+  if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+    return;
+  }
+
+  isDragging = true;
+  dragStartX = e.clientX;
+  dragStartY = e.clientY;
+
+  if (overlayElement) {
+    const rect = overlayElement.getBoundingClientRect();
+    overlayStartX = rect.left;
+    overlayStartY = rect.top;
+    overlayElement.style.cursor = 'grabbing';
+  }
+
+  // Add global listeners
+  document.addEventListener('mousemove', handleDragMove);
+  document.addEventListener('mouseup', handleDragEnd);
+
+  e.preventDefault();
+}
+
+/**
+ * Handle drag move
+ */
+function handleDragMove(e: MouseEvent): void {
+  if (!isDragging || !overlayElement) return;
+
+  const deltaX = e.clientX - dragStartX;
+  const deltaY = e.clientY - dragStartY;
+
+  const newX = overlayStartX + deltaX;
+  const newY = overlayStartY + deltaY;
+
+  // Apply position
+  overlayElement.style.left = `${newX}px`;
+  overlayElement.style.top = `${newY}px`;
+  overlayElement.style.right = 'auto';
+  overlayElement.style.transform = 'none';
+
+  // Show snap zones when near edges
+  const rect = overlayElement.getBoundingClientRect();
+  const windowWidth = window.innerWidth;
+
+  if (rect.left < SNAP_THRESHOLD) {
+    showSnapZone('left');
+  } else if (windowWidth - rect.right < SNAP_THRESHOLD) {
+    showSnapZone('right');
+  } else {
+    hideSnapZones();
+  }
+
+  e.preventDefault();
+}
+
+/**
+ * Handle drag end
+ */
+function handleDragEnd(e: MouseEvent): void {
+  if (!isDragging || !overlayElement) return;
+
+  isDragging = false;
+  overlayElement.style.cursor = '';
+
+  // Remove global listeners
+  document.removeEventListener('mousemove', handleDragMove);
+  document.removeEventListener('mouseup', handleDragEnd);
+
+  // Hide snap zones
+  hideSnapZones();
+
+  // Check for snap to edges
+  const rect = overlayElement.getBoundingClientRect();
+  const windowWidth = window.innerWidth;
+
+  // Snap to left edge
+  if (rect.left < SNAP_THRESHOLD) {
+    overlayDockPosition = 'left';
+    switchToDock('left');
+    return;
+  }
+
+  // Snap to right edge
+  if (windowWidth - rect.right < SNAP_THRESHOLD) {
+    overlayDockPosition = 'right';
+    switchToDock('right');
+    return;
+  }
+
+  // Save floating position
+  floatingPosition = { x: rect.left, y: rect.top };
+  saveFloatingPosition();
+}
+
+/**
+ * Create snap zone indicators
+ */
+function createSnapZones(): void {
+  if (snapZoneLeft && snapZoneRight) return;
+
+  snapZoneLeft = document.createElement('div');
+  snapZoneLeft.className = 'socratic-snap-zone left';
+  document.body.appendChild(snapZoneLeft);
+
+  snapZoneRight = document.createElement('div');
+  snapZoneRight.className = 'socratic-snap-zone right';
+  document.body.appendChild(snapZoneRight);
+}
+
+/**
+ * Show snap zone
+ */
+function showSnapZone(side: 'left' | 'right'): void {
+  createSnapZones();
+
+  if (side === 'left') {
+    snapZoneLeft?.classList.add('visible');
+    snapZoneRight?.classList.remove('visible');
+  } else {
+    snapZoneRight?.classList.add('visible');
+    snapZoneLeft?.classList.remove('visible');
+  }
+}
+
+/**
+ * Hide snap zones
+ */
+function hideSnapZones(): void {
+  snapZoneLeft?.classList.remove('visible');
+  snapZoneRight?.classList.remove('visible');
+}
+
+/**
+ * Switch to docked mode
+ */
+function switchToDock(position: 'left' | 'right'): void {
+  if (!overlayElement) return;
+
+  // Remove float mode
+  overlayElement.classList.remove('dock-float');
+  overlayElement.style.left = '';
+  overlayElement.style.top = '';
+  overlayElement.style.right = '';
+  overlayElement.style.transform = '';
+
+  // Apply dock
+  if (position === 'left') {
+    overlayElement.classList.add('dock-left');
+    overlayElement.classList.remove('dock-right');
+  } else {
+    overlayElement.classList.remove('dock-left');
+    overlayElement.classList.remove('dock-right');
+  }
+
+  overlayDockPosition = position;
+
+  // Update dock button
+  const dockBtn = overlayElement.querySelector('.sr-dock-btn') as HTMLButtonElement | null;
+  if (dockBtn) {
+    const positions = { right: 'Right', left: 'Left', float: 'Floating' };
+    dockBtn.title = `Dock: ${positions[overlayDockPosition]}`;
+  }
+
+  // Save preference
+  try {
+    localStorage.setItem('socratic-reader-dock', overlayDockPosition);
+  } catch (e) {
+    // Ignore
+  }
+}
+
+/**
+ * Apply floating position
+ */
+function applyFloatingPosition(): void {
+  if (!overlayElement || !floatingPosition) return;
+
+  // Use requestAnimationFrame to ensure styles are applied after class changes
+  requestAnimationFrame(() => {
+    if (!overlayElement || !floatingPosition) return;
+    overlayElement.style.left = `${floatingPosition.x}px`;
+    overlayElement.style.top = `${floatingPosition.y}px`;
+    overlayElement.style.right = 'auto';
+    overlayElement.style.transform = 'none';
+  });
+}
+
+/**
+ * Save floating position
+ */
+function saveFloatingPosition(): void {
+  if (!floatingPosition) return;
+
+  try {
+    localStorage.setItem('socratic-reader-float-position', JSON.stringify(floatingPosition));
+  } catch (e) {
+    // Ignore
   }
 }
 

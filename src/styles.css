@@ -86,17 +86,40 @@
 /* Docking: Floating */
 #socratic-reader-overlay.dock-float {
   top: 50%;
-  right: 20px;
+  right: auto;
+  left: 50%;
   height: auto;
   max-height: 80vh;
-  transform: translateY(-50%);
+  transform: translate(-50%, -50%);
   border-radius: var(--sr-radius);
   border: 1px solid var(--sr-border);
   box-shadow: 0 8px 32px var(--sr-shadow);
+  /* Disable transitions on position when in float mode to allow smooth dragging */
+  transition: box-shadow 0.2s ease, width 0.3s ease;
 }
 
 #socratic-reader-overlay.dock-float.visible {
-  right: 20px;
+  /* Position controlled by JS when dragging */
+}
+
+#socratic-reader-overlay.dock-float .sr-header {
+  cursor: grab !important;
+  user-select: none;
+}
+
+#socratic-reader-overlay.dock-float .sr-header:active {
+  cursor: grabbing !important;
+}
+
+/* Visual feedback when dragging */
+#socratic-reader-overlay.dock-float:active {
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.3);
+}
+
+/* Ensure title doesn't interfere with drag */
+#socratic-reader-overlay.dock-float .sr-title {
+  cursor: grab;
+  user-select: none;
 }
 
 /* Minimized State */
@@ -588,4 +611,30 @@
   padding: 2px 6px;
   font-family: monospace;
   font-size: 11px;
+}
+
+/* Snap Zone Indicators */
+.socratic-snap-zone {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 100px;
+  background: rgba(124, 179, 66, 0.1);
+  border: 2px dashed var(--sr-green);
+  pointer-events: none;
+  z-index: 2147483646;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.socratic-snap-zone.visible {
+  opacity: 1;
+}
+
+.socratic-snap-zone.left {
+  left: 0;
+}
+
+.socratic-snap-zone.right {
+  right: 0;
 }
