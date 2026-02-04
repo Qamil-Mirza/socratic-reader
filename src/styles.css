@@ -424,88 +424,14 @@
   transform: scale(1.1);
 }
 
-#socratic-reader-overlay .sr-reason,
-#socratic-reader-overlay .sr-question,
-#socratic-reader-overlay .sr-explanation {
-  margin-bottom: 12px;
-}
-
-#socratic-reader-overlay .sr-reason strong,
-#socratic-reader-overlay .sr-question strong {
-  color: var(--sr-green-dark);
-}
-
 #socratic-reader-overlay .sr-question {
+  margin-bottom: 12px;
   font-size: 15px;
 }
 
-#socratic-reader-overlay .sr-explanation {
-  color: var(--sr-text-secondary);
-  font-size: 13px;
-}
-
-/* Notes Section */
-#socratic-reader-overlay .sr-notes {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px dashed var(--sr-border);
-}
-
-#socratic-reader-overlay .sr-note-input {
-  width: 100%;
-  min-height: 80px;
-  padding: 12px;
-  border: 1px solid var(--sr-border);
-  border-radius: var(--sr-radius-sm);
-  font-family: inherit;
-  font-size: 13px;
-  resize: vertical;
-  transition: border-color var(--sr-transition);
-}
-
-#socratic-reader-overlay .sr-note-input:focus {
-  outline: none;
-  border-color: var(--sr-green);
-}
-
-#socratic-reader-overlay .sr-note-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-#socratic-reader-overlay .sr-save-note,
-#socratic-reader-overlay .sr-delete-note {
-  padding: 8px 16px;
-  border: none;
-  border-radius: var(--sr-radius-sm);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background-color var(--sr-transition), transform var(--sr-transition);
-}
-
-#socratic-reader-overlay .sr-save-note {
-  background: var(--sr-green);
-  color: white;
-}
-
-#socratic-reader-overlay .sr-save-note:hover {
-  background: var(--sr-green-dark);
-}
-
-#socratic-reader-overlay .sr-save-note:active {
-  transform: scale(0.98);
-}
-
-#socratic-reader-overlay .sr-delete-note {
-  background: transparent;
-  color: #c62828;
-  border: 1px solid currentColor;
-}
-
-#socratic-reader-overlay .sr-delete-note:hover {
-  background: #ffebee;
+#socratic-reader-overlay .sr-question-label {
+  font-weight: 600;
+  color: var(--sr-green-dark);
 }
 
 /* Navigation */

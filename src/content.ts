@@ -35,17 +35,7 @@ interface ProcessedHighlight extends Highlight {
   range: Range | null;
   chunkIndex: number;
   anchor?: TextAnchor; // Robust anchor for re-mapping after reload
-}
-
-interface SavedNote {
-  highlightId: string;
-  url: string;
-  start: number;
-  end: number;
-  text: string;
-  note: string;
-  createdAt: number;
-  anchor?: TextAnchor; // Robust anchor for re-mapping after reload
+  questions: Array<{ question: string; explanation: string }>;
 }
 
 interface AnalyzeChunkResponse {
@@ -62,27 +52,7 @@ interface TextAnchor {
   end: number;             // Character offset from document end (fallback)
 }
 
-interface AnchorResult {
-  range: Range;
-  exact: string;
-  score: number;           // Confidence score 0-1
-  method: 'exact' | 'fuzzy' | 'position';
-}
-
 type OverlayState = 'IDLE' | 'EXTRACTING' | 'ANALYZING' | 'DISPLAYING' | 'ERROR';
-
-// Storage operations via message passing to background script
-async function getNotes(url: string): Promise<SavedNote[]> {
-  return chrome.runtime.sendMessage({ action: 'GET_NOTES', url });
-}
-
-async function saveNote(note: SavedNote): Promise<void> {
-  return chrome.runtime.sendMessage({ action: 'SAVE_NOTE', note });
-}
-
-async function deleteNote(url: string, highlightId: string): Promise<void> {
-  return chrome.runtime.sendMessage({ action: 'DELETE_NOTE', url, highlightId });
-}
 
 // Cache operations via message passing
 interface CacheResponse {
@@ -164,8 +134,6 @@ let snapZoneRight: HTMLElement | null = null;
 // =============================================================================
 
 const CONTEXT_LENGTH = 32;  // Characters of prefix/suffix to capture
-const FUZZY_THRESHOLD = 0.8; // Minimum similarity for fuzzy match
-
 /**
  * Creates a robust anchor descriptor from a DOM Range
  */
@@ -181,41 +149,6 @@ function describeRange(range: Range, root: Node = document.body): TextAnchor {
     start,
     end
   };
-}
-
-/**
- * Re-anchors a persisted descriptor to the current DOM
- */
-async function anchorToRange(descriptor: TextAnchor, root: Node = document.body): Promise<AnchorResult | null> {
-  // Strategy 1: Try exact quote match with context
-  const exactMatch = findQuote(descriptor, root);
-  if (exactMatch) {
-    return {
-      range: exactMatch,
-      exact: descriptor.exact,
-      score: 1.0,
-      method: 'exact'
-    };
-  }
-
-  // Strategy 2: Try fuzzy quote match (handles minor text changes)
-  const fuzzyMatch = findFuzzyQuote(descriptor, root);
-  if (fuzzyMatch && fuzzyMatch.score >= FUZZY_THRESHOLD) {
-    return fuzzyMatch;
-  }
-
-  // Strategy 3: Fall back to position-based (least reliable)
-  const positionMatch = findByPosition(descriptor, root);
-  if (positionMatch) {
-    return {
-      range: positionMatch,
-      exact: positionMatch.toString(),
-      score: 0.5,
-      method: 'position'
-    };
-  }
-
-  return null;
 }
 
 /**
@@ -261,138 +194,6 @@ function getTextOffsetForNode(node: Node, offset: number, textNodes: Text[]): nu
 }
 
 /**
- * Finds exact quote match using prefix/suffix for disambiguation
- */
-function findQuote(descriptor: TextAnchor, root: Node): Range | null {
-  const { exact, prefix, suffix } = descriptor;
-  const textNodes = getTextNodesForAnchoring(root);
-  const fullText = textNodes.map(n => n.textContent).join('');
-
-  // Find all occurrences of exact text
-  const occurrences: number[] = [];
-  let index = fullText.indexOf(exact);
-  while (index !== -1) {
-    occurrences.push(index);
-    index = fullText.indexOf(exact, index + 1);
-  }
-
-  if (occurrences.length === 0) return null;
-
-  // If only one match, return it
-  if (occurrences.length === 1) {
-    return createRangeFromOffset(occurrences[0], occurrences[0] + exact.length, textNodes);
-  }
-
-  // Use context to disambiguate
-  for (const start of occurrences) {
-    const actualPrefix = fullText.slice(Math.max(0, start - CONTEXT_LENGTH), start);
-    const actualSuffix = fullText.slice(start + exact.length, start + exact.length + CONTEXT_LENGTH);
-
-    if (actualPrefix.endsWith(prefix) && actualSuffix.startsWith(suffix)) {
-      return createRangeFromOffset(start, start + exact.length, textNodes);
-    }
-  }
-
-  // If no context match, return first occurrence as fallback
-  return createRangeFromOffset(occurrences[0], occurrences[0] + exact.length, textNodes);
-}
-
-/**
- * Fuzzy quote matching using Levenshtein distance for robustness
- */
-function findFuzzyQuote(descriptor: TextAnchor, root: Node): AnchorResult | null {
-  const { exact, prefix, suffix } = descriptor;
-  const textNodes = getTextNodesForAnchoring(root);
-  const fullText = textNodes.map(n => n.textContent).join('');
-
-  const searchLength = exact.length;
-  let bestMatch: { start: number; score: number; text: string } | null = null;
-
-  // Slide window across text
-  for (let i = 0; i < fullText.length - searchLength + 50; i++) {
-    const candidate = fullText.slice(i, Math.min(i + searchLength + 50, fullText.length));
-    const score = similarity(exact, candidate.slice(0, searchLength));
-
-    if (score > FUZZY_THRESHOLD && (!bestMatch || score > bestMatch.score)) {
-      const actualPrefix = fullText.slice(Math.max(0, i - CONTEXT_LENGTH), i);
-      const actualSuffix = fullText.slice(i + searchLength, i + searchLength + CONTEXT_LENGTH);
-
-      const contextScore = (similarity(prefix, actualPrefix) + similarity(suffix, actualSuffix)) / 2;
-
-      if (contextScore > 0.7) {
-        bestMatch = { start: i, score, text: candidate.slice(0, searchLength) };
-      }
-    }
-  }
-
-  if (!bestMatch) return null;
-
-  const range = createRangeFromOffset(bestMatch.start, bestMatch.start + searchLength, textNodes);
-  if (!range) return null;
-
-  return {
-    range,
-    exact: bestMatch.text,
-    score: bestMatch.score,
-    method: 'fuzzy'
-  };
-}
-
-/**
- * Position-based anchoring (least reliable, but fast)
- */
-function findByPosition(descriptor: TextAnchor, root: Node): Range | null {
-  const textNodes = getTextNodesForAnchoring(root);
-  const fullText = textNodes.map(n => n.textContent).join('');
-
-  if (descriptor.start >= fullText.length || descriptor.end > fullText.length) {
-    return null;
-  }
-
-  return createRangeFromOffset(descriptor.start, descriptor.end, textNodes);
-}
-
-/**
- * Creates a DOM Range from character offsets
- */
-function createRangeFromOffset(start: number, end: number, textNodes: Text[]): Range | null {
-  let currentOffset = 0;
-  let startNode: Text | null = null;
-  let startOffset = 0;
-  let endNode: Text | null = null;
-  let endOffset = 0;
-
-  for (const node of textNodes) {
-    const nodeLength = (node.textContent || '').length;
-
-    if (!startNode && currentOffset + nodeLength > start) {
-      startNode = node;
-      startOffset = start - currentOffset;
-    }
-
-    if (!endNode && currentOffset + nodeLength >= end) {
-      endNode = node;
-      endOffset = end - currentOffset;
-      break;
-    }
-
-    currentOffset += nodeLength;
-  }
-
-  if (!startNode || !endNode) return null;
-
-  const range = document.createRange();
-  try {
-    range.setStart(startNode, startOffset);
-    range.setEnd(endNode, endOffset);
-    return range;
-  } catch (e) {
-    console.error('[Socratic Reader] Failed to create range:', e);
-    return null;
-  }
-}
-
-/**
  * Gets all text nodes under a root (for anchoring)
  */
 function getTextNodesForAnchoring(root: Node): Text[] {
@@ -425,45 +226,6 @@ function getTextNodesForAnchoring(root: Node): Text[] {
   }
 
   return nodes;
-}
-
-/**
- * Calculates similarity between two strings (0-1)
- */
-function similarity(s1: string, s2: string): number {
-  const longer = s1.length > s2.length ? s1 : s2;
-  const shorter = s1.length > s2.length ? s2 : s1;
-
-  if (longer.length === 0) return 1.0;
-
-  const distance = levenshtein(longer, shorter);
-  return (longer.length - distance) / longer.length;
-}
-
-/**
- * Levenshtein distance implementation
- */
-function levenshtein(s1: string, s2: string): number {
-  const costs: number[] = [];
-
-  for (let i = 0; i <= s2.length; i++) {
-    let lastValue = i;
-    for (let j = 0; j <= s1.length; j++) {
-      if (i === 0) {
-        costs[j] = j;
-      } else if (j > 0) {
-        let newValue = costs[j - 1];
-        if (s1.charAt(j - 1) !== s2.charAt(i - 1)) {
-          newValue = Math.min(Math.min(newValue, lastValue), costs[j]) + 1;
-        }
-        costs[j - 1] = lastValue;
-        lastValue = newValue;
-      }
-    }
-    if (i > 0) costs[s1.length] = lastValue;
-  }
-
-  return costs[s1.length];
 }
 
 // =============================================================================
@@ -824,6 +586,23 @@ function expandToSentence(chunkText: string, start: number, end: number): { star
   }
 
   return { start: expandedStart, end: expandedEnd };
+}
+
+/**
+ * Merge highlights that expanded to the same sentence into a single card.
+ * Preserves reading order (first occurrence wins). Accumulates questions.
+ */
+function deduplicateByText(highlights: ProcessedHighlight[]): ProcessedHighlight[] {
+  const seen = new Map<string, ProcessedHighlight>();
+  for (const ph of highlights) {
+    const existing = seen.get(ph.text);
+    if (existing) {
+      existing.questions.push(...ph.questions);
+    } else {
+      seen.set(ph.text, ph);
+    }
+  }
+  return [...seen.values()];
 }
 
 /**
@@ -1622,20 +1401,18 @@ function showError(message: string): void {
 /**
  * Render the highlights list
  */
-async function renderHighlightsList(): Promise<void> {
+function renderHighlightsList(): void {
   if (!overlayElement) return;
-  
+
   const list = overlayElement.querySelector('.sr-highlights-list');
   if (!list) return;
-  
-  // Load saved notes for this URL
-  const savedNotes = await getNotes(window.location.href);
-  const notesMap = new Map(savedNotes.map(n => [n.highlightId, n]));
-  
+
   list.innerHTML = currentHighlights.map((h, i) => {
-    const savedNote = notesMap.get(h.id);
     const isActive = i === currentHighlightIndex;
-    
+    const questionsHtml = h.questions.map((q, qi) =>
+      `<div class="sr-question">${h.questions.length > 1 ? `<span class="sr-question-label">${qi + 1}.</span> ` : ''}${escapeHtml(q.question)}</div>`
+    ).join('');
+
     return `
       <div class="sr-highlight-item ${isActive ? 'active' : ''}" data-index="${i}" data-id="${h.id}">
         <div class="sr-highlight-header" role="button" tabindex="0">
@@ -1643,40 +1420,17 @@ async function renderHighlightsList(): Promise<void> {
           <p class="sr-claim">"${escapeHtml(h.text.slice(0, 100))}${h.text.length > 100 ? '...' : ''}"</p>
         </div>
         <div class="sr-highlight-content">
-          <div class="sr-reason">
-            <strong>Why it matters:</strong> ${escapeHtml(h.reason)}
-          </div>
-          <div class="sr-question">
-            <strong>Question:</strong> ${escapeHtml(h.question)}
-          </div>
-          <div class="sr-explanation">
-            ${escapeHtml(h.explanation)}
-          </div>
-          <div class="sr-notes">
-            <textarea 
-              class="sr-note-input" 
-              placeholder="Your notes..."
-              data-id="${h.id}"
-            >${savedNote?.note ?? ''}</textarea>
-            <div class="sr-note-actions">
-              <button class="sr-save-note" data-id="${h.id}">Save Note</button>
-              ${savedNote ? `<button class="sr-delete-note" data-id="${h.id}">Delete</button>` : ''}
-            </div>
-          </div>
+          ${questionsHtml}
         </div>
       </div>
     `;
   }).join('');
-  
+
   // Add event listeners
   list.querySelectorAll('.sr-highlight-header').forEach((header) => {
     header.addEventListener('click', (e) => {
       const item = (e.currentTarget as HTMLElement).closest('.sr-highlight-item');
-
-      // Normal click: toggle collapse
       item?.classList.toggle('collapsed');
-
-      // Prevent default to avoid text selection
       e.preventDefault();
     });
   });
@@ -1684,19 +1438,11 @@ async function renderHighlightsList(): Promise<void> {
   // Click on highlight number to select/scroll to highlight
   list.querySelectorAll('.sr-highlight-number').forEach((num) => {
     num.addEventListener('click', (e) => {
-      e.stopPropagation(); // Don't trigger header collapse
+      e.stopPropagation();
       const item = (e.currentTarget as HTMLElement).closest('.sr-highlight-item');
       const index = parseInt(item?.getAttribute('data-index') ?? '0', 10);
       selectHighlight(index);
     });
-  });
-  
-  list.querySelectorAll('.sr-save-note').forEach((btn) => {
-    btn.addEventListener('click', handleSaveNote);
-  });
-  
-  list.querySelectorAll('.sr-delete-note').forEach((btn) => {
-    btn.addEventListener('click', handleDeleteNote);
   });
 }
 
@@ -1755,61 +1501,6 @@ function updateNavCounter(): void {
   }
 }
 
-/**
- * Handle save note button click
- */
-async function handleSaveNote(e: Event): Promise<void> {
-  const btn = e.currentTarget as HTMLElement;
-  const highlightId = btn.getAttribute('data-id');
-  if (!highlightId) return;
-  
-  const highlight = currentHighlights.find(h => h.id === highlightId);
-  if (!highlight) return;
-  
-  const textarea = overlayElement?.querySelector(
-    `.sr-note-input[data-id="${highlightId}"]`
-  ) as HTMLTextAreaElement;
-  const noteText = textarea?.value?.trim() ?? '';
-  
-  if (!noteText) return;
-  
-  const note: SavedNote = {
-    highlightId,
-    url: window.location.href,
-    start: highlight.start,
-    end: highlight.end,
-    text: highlight.text.slice(0, 100), // Short snippet only
-    note: noteText,
-    createdAt: Date.now(),
-    anchor: highlight.anchor, // Include robust anchor for re-mapping
-  };
-
-  await saveNote(note);
-  
-  // Update button state
-  btn.textContent = 'Saved!';
-  setTimeout(() => {
-    btn.textContent = 'Save Note';
-  }, 1500);
-  
-  // Re-render to show delete button
-  renderHighlightsList();
-}
-
-/**
- * Handle delete note button click
- */
-async function handleDeleteNote(e: Event): Promise<void> {
-  const btn = e.currentTarget as HTMLElement;
-  const highlightId = btn.getAttribute('data-id');
-  if (!highlightId) return;
-  
-  await deleteNote(window.location.href, highlightId);
-  
-  // Re-render
-  renderHighlightsList();
-}
-
 // =============================================================================
 // Analysis Flow
 // =============================================================================
@@ -1860,15 +1551,17 @@ function applyCachedHighlights(
       range,
       chunkIndex,
       anchor,
+      questions: [{ question: h.question, explanation: h.explanation }],
     };
 
     processed.push(processedHighlight);
   }
 
+  // Merge highlights that expanded to the same sentence
+  const deduped = deduplicateByText(processed);
+
   // Apply to DOM in REVERSE order (end to start) to prevent invalidation
-  // When we wrap text in spans, it modifies the DOM. Applying from end to start
-  // ensures earlier highlights don't invalidate later ones.
-  const reversedForDOM = [...processed].reverse();
+  const reversedForDOM = [...deduped].reverse();
   for (const ph of reversedForDOM) {
     if (ph.range) {
       applyHighlight(ph.range, ph.id);
@@ -1876,7 +1569,7 @@ function applyCachedHighlights(
   }
 
   // Add to currentHighlights in original reading order for sidebar display
-  currentHighlights.push(...processed);
+  currentHighlights.push(...deduped);
 }
 
 /**
@@ -2002,6 +1695,7 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
             range,
             chunkIndex: i,
             anchor,
+            questions: [{ question: h.question, explanation: h.explanation }],
           };
 
           processedForChunk.push(processedHighlight);
@@ -2014,9 +1708,12 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
           });
         }
 
+        // Merge highlights that expanded to the same sentence
+        const dedupedForChunk = deduplicateByText(processedForChunk);
+
         // Apply to DOM in REVERSE order (end to start)
         // This prevents earlier highlights from invalidating later ones when we modify the DOM
-        const reversedForDOM = [...processedForChunk].reverse();
+        const reversedForDOM = [...dedupedForChunk].reverse();
         for (const ph of reversedForDOM) {
           if (ph.range) {
             applyHighlight(ph.range, ph.id);
@@ -2024,7 +1721,7 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
         }
 
         // Add to currentHighlights in original reading order
-        currentHighlights.push(...processedForChunk);
+        currentHighlights.push(...dedupedForChunk);
       }
     } catch (e) {
       // Check if it's a message channel error
@@ -2100,76 +1797,6 @@ chrome.runtime.onMessage.addListener((msg) => {
 // =============================================================================
 // Highlight Restoration
 // =============================================================================
-
-/**
- * Restore saved highlights on page load using robust anchoring
- */
-async function restoreHighlights(): Promise<void> {
-  try {
-    const pageUrl = window.location.href;
-    const savedNotes = await getNotes(pageUrl);
-
-    if (savedNotes.length === 0) {
-      console.log('[Socratic Reader] No saved highlights to restore');
-      return;
-    }
-
-    console.log(`[Socratic Reader] Restoring ${savedNotes.length} saved highlights...`);
-
-    let successCount = 0;
-    const restored: ProcessedHighlight[] = [];
-
-    for (const note of savedNotes) {
-      if (!note.anchor) {
-        console.warn(`[Socratic Reader] No anchor for highlight ${note.highlightId}, skipping`);
-        continue;
-      }
-
-      // Re-anchor using robust anchoring
-      const result = await anchorToRange(note.anchor, document.body);
-
-      if (result && result.score >= 0.7) {
-        // Apply highlight to DOM
-        applyHighlight(result.range, note.highlightId);
-
-        // Create ProcessedHighlight for reference
-        const processedHighlight: ProcessedHighlight = {
-          start: note.start,
-          end: note.end,
-          reason: '', // Not needed for restored highlights
-          question: '', // Not needed for restored highlights
-          explanation: note.note,
-          id: note.highlightId,
-          text: note.text,
-          range: result.range,
-          chunkIndex: 0, // Not relevant for restored highlights
-          anchor: note.anchor,
-        };
-
-        restored.push(processedHighlight);
-        successCount++;
-
-        const scorePercent = Math.round(result.score * 100);
-        console.log(
-          `[Socratic Reader] ✓ Re-anchored ${note.highlightId} using ${result.method} (${scorePercent}% confidence)`
-        );
-      } else {
-        console.warn(
-          `[Socratic Reader] ✗ Failed to re-anchor ${note.highlightId} (score: ${result?.score ?? 0})`
-        );
-      }
-    }
-
-    if (successCount > 0) {
-      console.log(`[Socratic Reader] Successfully restored ${successCount}/${savedNotes.length} highlights`);
-
-      // Store restored highlights for reference (they won't appear in the analysis overlay)
-      // but they'll be visible on the page
-    }
-  } catch (error) {
-    console.error('[Socratic Reader] Error restoring highlights:', error);
-  }
-}
 
 // =============================================================================
 // Keyboard Shortcuts & Hover Tooltips
@@ -2263,7 +1890,9 @@ function setupHighlightHoverListeners(): void {
         const highlightId = el.dataset.highlightId;
         const highlightData = currentHighlights.find(h => h.id === highlightId);
         if (highlightData) {
-          const preview = `${highlightData.question}\n\n${highlightData.explanation.slice(0, 150)}...`;
+          const preview = highlightData.questions
+            .map((q, i) => highlightData.questions.length > 1 ? `${i + 1}. ${q.question}` : q.question)
+            .join('\n\n');
           showHighlightTooltip(el, preview);
         }
       }, 500); // Show after 500ms hover
@@ -2284,13 +1913,3 @@ console.log('[Socratic Reader] Content script loaded');
 
 // Add keyboard shortcut listener
 document.addEventListener('keydown', handleKeyboardShortcut);
-
-// Restore saved highlights when page loads
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => {
-    restoreHighlights();
-  });
-} else {
-  // DOM already loaded
-  restoreHighlights();
-}
