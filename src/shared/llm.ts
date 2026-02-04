@@ -21,11 +21,11 @@ const SYSTEM_PROMPT = `You are a Socratic philosophy tutor assisting with readin
 
 Follow these rules:
 - Use ONLY the provided chunk. NEVER reference or invent text outside it.
-- Identify clear, self-contained statements that express reasoning, claims, or assertions worth examining.
-- Prefer full sentences or grammatically complete clauses that can stand alone.
+- Identify clear statements that express reasoning, claims, or assertions worth examining.
+- Your offsets just need to point somewhere inside the target claim — the system will automatically expand the highlight to the full sentence.
 - Return only structured JSON as instructed. Do not include any natural language outside the JSON.
 
-Be precise, analytical, and strict. Do not return partial phrases or vague fragments.`;
+Be precise, analytical, and strict.`;
 
 // User prompt template
 function buildUserPrompt(chunkText: string): string {
@@ -33,13 +33,10 @@ function buildUserPrompt(chunkText: string): string {
 Return STRICT JSON with schema:
 { "highlights": [{"start":..., "end":..., "reason":"...", "question":"...", "explanation":"..."}] }
 Rules:
-- The highlighted span MUST be a verbatim substring of the chunk.
-- Highlight COMPLETE statements or claims that are meaningful when read alone.
-- Include full sentences or complete clauses - avoid fragmentary phrases.
-- A good highlight should make sense without additional context (e.g., "Human skin is the first line of defense against many pathogens" rather than just "first line of").
-- Avoid highlighting entire paragraphs; focus on 1-3 sentence spans that capture key ideas.
+- start and end are character offsets (0-indexed) within the provided text. They MUST point to a verbatim substring.
+- The system will automatically expand the highlighted span to the full containing sentence, so your offsets just need to land inside the key claim — no need to manually find sentence boundaries.
+- Identify 1-3 distinct claims or arguments; do not pick multiple offsets inside the same sentence.
 - Keep reason/explanation concise.
-- start and end are character offsets (0-indexed) within the provided text.
 - Ensure start < end.
 
 Text:

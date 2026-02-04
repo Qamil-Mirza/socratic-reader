@@ -1,5 +1,5 @@
 // Types inlined to avoid imports (required for programmatic injection)
-import { createSemanticChunks, type SemanticChunk } from './shared/semantic-chunking';
+import { createSemanticChunks, detectSentences, type SemanticChunk } from './shared/semantic-chunking';
 
 interface NodeRange {
   node: Text;
@@ -792,6 +792,39 @@ function getNodeRangesForOffset(
 // =============================================================================
 // DOM Highlighting
 // =============================================================================
+
+/**
+ * Expand a highlight's [start, end) range to cover the full sentence(s) it falls in.
+ * If the range spans multiple sentences, all of them are included.
+ * Falls back to the original offsets when sentence detection finds no match.
+ */
+function expandToSentence(chunkText: string, start: number, end: number): { start: number; end: number } {
+  const sentences = detectSentences(chunkText);
+  if (sentences.length === 0) return { start, end };
+
+  let expandedStart = start;
+  let expandedEnd = end;
+  let foundStart = false;
+  let foundEnd = false;
+
+  for (const sentence of sentences) {
+    if (!foundStart && sentence.start <= start && start < sentence.end) {
+      expandedStart = sentence.start;
+      foundStart = true;
+    }
+    if (!foundEnd && sentence.start < end && end <= sentence.end) {
+      expandedEnd = sentence.end;
+      foundEnd = true;
+    }
+  }
+
+  // Trim trailing whitespace so the highlight span doesn't include it
+  while (expandedEnd > expandedStart && /\s/.test(chunkText[expandedEnd - 1])) {
+    expandedEnd--;
+  }
+
+  return { start: expandedStart, end: expandedEnd };
+}
 
 /**
  * Convert character offset to DOM Range
@@ -1955,8 +1988,9 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
 
         for (const h of response.highlights) {
           const id = `h-${highlightCounter++}`;
-          const text = chunks[i].text.slice(h.start, h.end);
-          const range = offsetToRange(chunks[i], h.start, h.end);
+          const expanded = expandToSentence(chunks[i].text, h.start, h.end);
+          const text = chunks[i].text.slice(expanded.start, expanded.end);
+          const range = offsetToRange(chunks[i], expanded.start, expanded.end);
 
           // Create robust anchor for persistent re-mapping
           const anchor = range ? describeRange(range, document.body) : undefined;
@@ -1972,11 +2006,11 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
 
           processedForChunk.push(processedHighlight);
 
-          // Store with global offset for cache
+          // Store with global offset for cache (use expanded sentence range)
           allHighlightsForCache.push({
             ...h,
-            start: h.start + chunks[i].globalOffset,
-            end: h.end + chunks[i].globalOffset,
+            start: expanded.start + chunks[i].globalOffset,
+            end: expanded.end + chunks[i].globalOffset,
           });
         }
 
