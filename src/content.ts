@@ -2365,7 +2365,57 @@ async function sendChatMessage(highlightId: string, userMessage: string): Promis
 
   // Check aporia threshold
   if (session.aporiaScore >= 0.95) {
-    showAporiaModal();
+    transformChatModalToAporia();
+  }
+}
+
+/**
+ * Transform the chat modal into a congratulations view when aporia is reached
+ */
+function transformChatModalToAporia(): void {
+  if (!chatModalElement) return;
+
+  // Add the congratulations state class
+  const modalContent = chatModalElement.querySelector('.socratic-chat-modal-content');
+  if (!modalContent) return;
+
+  modalContent.classList.add('sr-chat-aporia-state');
+
+  // Hide the context quote, aporia meter, and input area
+  const contextQuote = chatModalElement.querySelector('.sr-chat-context');
+  const aporiaMeter = chatModalElement.querySelector('.sr-aporia-meter-container');
+  const inputArea = chatModalElement.querySelector('.sr-chat-input-area');
+
+  if (contextQuote) (contextQuote as HTMLElement).style.display = 'none';
+  if (aporiaMeter) (aporiaMeter as HTMLElement).style.display = 'none';
+  if (inputArea) (inputArea as HTMLElement).style.display = 'none';
+
+  // Update the title
+  const title = chatModalElement.querySelector('.sr-chat-title');
+  if (title) {
+    title.textContent = 'Aporia Reached';
+  }
+
+  // Replace messages area with congratulations content
+  const messagesContainer = chatModalElement.querySelector('.sr-chat-messages');
+  if (messagesContainer) {
+    messagesContainer.innerHTML = `
+      <div class="sr-chat-aporia-content">
+        <div class="sr-chat-aporia-icon">&#8734;</div>
+        <blockquote class="sr-chat-aporia-quote">
+          "The beginning of wisdom is the definition of terms."
+          <cite>— Socrates</cite>
+        </blockquote>
+        <p class="sr-chat-aporia-explanation">
+          You have arrived at a productive state of intellectual uncertainty. This is not a failure — it is the very beginning of true understanding. The willingness to sit with not-knowing is what separates genuine inquiry from mere opinion.
+        </p>
+        <button class="sr-chat-aporia-continue-btn">Continue Reading</button>
+      </div>
+    `;
+
+    // Add click handler for the continue button
+    const continueBtn = messagesContainer.querySelector('.sr-chat-aporia-continue-btn');
+    continueBtn?.addEventListener('click', closeChatPanel);
   }
 }
 
@@ -2385,45 +2435,10 @@ function closeChatPanel(): void {
 }
 
 // =============================================================================
-// Feature 4: Aporia Modal
+// Feature 4: Aporia Modal (Now integrated into chat modal transformation)
 // =============================================================================
-
-function showAporiaModal(): void {
-  // Idempotent: don't create a second modal
-  if (document.getElementById('socratic-aporia-modal')) return;
-
-  const modal = document.createElement('div');
-  modal.id = 'socratic-aporia-modal';
-  modal.className = 'socratic-aporia-modal';
-  modal.innerHTML = `
-    <div class="socratic-aporia-modal-content">
-      <div class="socratic-aporia-icon">&#8734;</div>
-      <h2 class="socratic-aporia-title">Aporia Reached</h2>
-      <blockquote class="socratic-aporia-quote">
-        "The beginning of wisdom is the definition of terms."
-        <cite>— Socrates</cite>
-      </blockquote>
-      <p class="socratic-aporia-explanation">
-        You have arrived at a productive state of intellectual uncertainty. This is not a failure — it is the very beginning of true understanding. The willingness to sit with not-knowing is what separates genuine inquiry from mere opinion.
-      </p>
-      <button class="socratic-aporia-close-btn">Continue Reading</button>
-    </div>
-  `;
-
-  // Close on button click
-  modal.querySelector('.socratic-aporia-close-btn')?.addEventListener('click', () => {
-    modal.remove();
-  });
-
-  // Close on backdrop click (click on the modal itself, not the content card)
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) {
-      modal.remove();
-    }
-  });
-
-  document.body.appendChild(modal);
-}
+// The separate aporia modal has been replaced with transformChatModalToAporia()
+// which transforms the existing chat modal into the congratulations view.
 
 // =============================================================================
 // Initialization
