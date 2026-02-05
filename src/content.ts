@@ -170,6 +170,7 @@ interface ChatSession {
 }
 const chatSessions = new Map<string, ChatSession>();
 let activeChatHighlightId: string | null = null;
+let chatModalElement: HTMLElement | null = null;
 
 // =============================================================================
 // Robust Text Anchoring
@@ -2160,18 +2161,31 @@ function openChatPanel(highlightId: string): void {
 
   activeChatHighlightId = highlightId;
   const session = chatSessions.get(highlightId)!;
-  renderChatPanel(session);
+
+  // Minimize the sidebar to get it out of the way
+  if (overlayElement && !overlayMinimized) {
+    toggleMinimize();
+  }
+
+  // Render chat in a modal instead of replacing sidebar content
+  renderChatModal(session);
 }
 
-function renderChatPanel(session: ChatSession): void {
-  if (!overlayElement) return;
-  const list = overlayElement.querySelector('.sr-highlights-list');
-  if (!list) return;
+function renderChatModal(session: ChatSession): void {
+  // If modal already exists, just update the messages and meter
+  if (chatModalElement && document.body.contains(chatModalElement)) {
+    updateChatModalContent(session);
+    return;
+  }
+
+  // Create modal
+  const modal = document.createElement('div');
+  modal.className = 'socratic-chat-modal';
+  modal.id = 'socratic-chat-modal';
 
   // Build messages HTML (skip system message at index 0)
   const messagesHtml = session.history.slice(1).map((msg) => {
     let displayText = msg.content;
-    // Assistant messages are JSON — extract the response field
     if (msg.role === 'assistant') {
       try {
         const parsed = JSON.parse(msg.content);
@@ -2186,12 +2200,13 @@ function renderChatPanel(session: ChatSession): void {
 
   const pct = Math.round(session.aporiaScore * 100);
 
-  list.innerHTML = `
-    <div class="sr-chat-panel">
+  modal.innerHTML = `
+    <div class="socratic-chat-modal-content">
       <div class="sr-chat-header">
-        <button class="sr-chat-back-btn">&larr; Back</button>
-        <blockquote class="sr-chat-context">"${escapeHtml(session.highlightText.slice(0, 80))}${session.highlightText.length > 80 ? '…' : ''}"</blockquote>
+        <h3 class="sr-chat-title">Socratic Dialogue</h3>
+        <button class="sr-chat-close-btn" aria-label="Close chat">&times;</button>
       </div>
+      <blockquote class="sr-chat-context">"${escapeHtml(session.highlightText.slice(0, 120))}${session.highlightText.length > 120 ? '…' : ''}"</blockquote>
       <div class="sr-aporia-meter-container">
         <span class="sr-aporia-label">Progress</span>
         <div class="sr-aporia-meter"><div class="sr-aporia-fill" style="width:${pct}%"></div></div>
@@ -2205,16 +2220,19 @@ function renderChatPanel(session: ChatSession): void {
     </div>
   `;
 
-  // Auto-scroll messages to bottom
-  const msgContainer = list.querySelector('.sr-chat-messages');
-  if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+  // Close button
+  modal.querySelector('.sr-chat-close-btn')?.addEventListener('click', closeChatPanel);
 
-  // Back button
-  list.querySelector('.sr-chat-back-btn')?.addEventListener('click', closeChatPanel);
+  // Backdrop click closes modal
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      closeChatPanel();
+    }
+  });
 
   // Send button
-  const textarea = list.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
-  const sendBtn = list.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
+  const textarea = modal.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
+  const sendBtn = modal.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
 
   function doSend() {
     if (!textarea || !sendBtn) return;
@@ -2231,6 +2249,57 @@ function renderChatPanel(session: ChatSession): void {
       doSend();
     }
   });
+
+  // Append to body
+  document.body.appendChild(modal);
+  chatModalElement = modal;
+
+  // Auto-scroll messages to bottom
+  const msgContainer = modal.querySelector('.sr-chat-messages');
+  if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+
+  // Auto-focus the textarea
+  textarea?.focus();
+}
+
+/**
+ * Update chat modal content without recreating the entire modal
+ */
+function updateChatModalContent(session: ChatSession): void {
+  if (!chatModalElement) return;
+
+  // Build messages HTML (skip system message at index 0)
+  const messagesHtml = session.history.slice(1).map((msg) => {
+    let displayText = msg.content;
+    if (msg.role === 'assistant') {
+      try {
+        const parsed = JSON.parse(msg.content);
+        displayText = parsed.response || msg.content;
+      } catch {
+        // not JSON, use raw
+      }
+    }
+    const cls = msg.role === 'user' ? 'sr-chat-msg-user' : 'sr-chat-msg-assistant';
+    return `<div class="${cls}">${escapeHtml(displayText)}</div>`;
+  }).join('');
+
+  // Update messages
+  const msgContainer = chatModalElement.querySelector('.sr-chat-messages');
+  if (msgContainer) {
+    msgContainer.innerHTML = messagesHtml;
+    msgContainer.scrollTop = msgContainer.scrollHeight;
+  }
+
+  // Update aporia meter
+  const pct = Math.round(session.aporiaScore * 100);
+  const aporiaFill = chatModalElement.querySelector('.sr-aporia-fill') as HTMLElement | null;
+  const aporiaValue = chatModalElement.querySelector('.sr-aporia-value');
+  if (aporiaFill) {
+    aporiaFill.style.width = `${pct}%`;
+  }
+  if (aporiaValue) {
+    aporiaValue.textContent = `${pct}%`;
+  }
 }
 
 async function sendChatMessage(highlightId: string, userMessage: string): Promise<void> {
@@ -2240,13 +2309,13 @@ async function sendChatMessage(highlightId: string, userMessage: string): Promis
   // Append user message to history (optimistic)
   session.history.push({ role: 'user', content: userMessage });
 
-  // Re-render immediately (optimistic UI)
-  renderChatPanel(session);
+  // Update modal to show user message immediately (optimistic UI)
+  renderChatModal(session);
 
   // Disable input while waiting
-  if (overlayElement) {
-    const textarea = overlayElement.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
-    const sendBtn = overlayElement.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
+  if (chatModalElement) {
+    const textarea = chatModalElement.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
+    const sendBtn = chatModalElement.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
     if (textarea) textarea.disabled = true;
     if (sendBtn) sendBtn.disabled = true;
   }
@@ -2278,8 +2347,21 @@ async function sendChatMessage(highlightId: string, userMessage: string): Promis
     session.history.push({ role: 'assistant', content: JSON.stringify({ response: 'Connection error. Please try again.', aporiaScore: session.aporiaScore }) });
   }
 
-  // Re-enable input and re-render
-  renderChatPanel(session);
+  // Update modal with assistant response
+  renderChatModal(session);
+
+  // Re-enable input and refocus
+  if (chatModalElement) {
+    const textarea = chatModalElement.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
+    const sendBtn = chatModalElement.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
+    if (textarea) {
+      textarea.disabled = false;
+      textarea.focus();
+    }
+    if (sendBtn) {
+      sendBtn.disabled = false;
+    }
+  }
 
   // Check aporia threshold
   if (session.aporiaScore >= 0.95) {
@@ -2289,7 +2371,17 @@ async function sendChatMessage(highlightId: string, userMessage: string): Promis
 
 function closeChatPanel(): void {
   activeChatHighlightId = null;
-  updateOverlayState();
+
+  // Remove the modal
+  if (chatModalElement && document.body.contains(chatModalElement)) {
+    chatModalElement.remove();
+  }
+  chatModalElement = null;
+
+  // Restore sidebar if it was minimized
+  if (overlayElement && overlayMinimized) {
+    toggleMinimize();
+  }
 }
 
 // =============================================================================
