@@ -4,7 +4,7 @@
   "description": "Chrome Extension that helps users read philosophy intentionally with Socratic questioning",
   "type": "module",
   "scripts": {
-    "dev": "vite build --watch",
+    "dev": "bash scripts/ollama-dev.sh",
     "build": "tsc && vite build",
     "test": "vitest run",
     "test:watch": "vitest",

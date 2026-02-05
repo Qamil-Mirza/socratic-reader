@@ -448,7 +448,8 @@
 #socratic-reader-overlay .sr-nav-btn {
   padding: 8px 16px;
   border: 1px solid var(--sr-border);
-  background: white;
+  background: var(--sr-bg-dark);
+  color: var(--sr-text);
   border-radius: var(--sr-radius-sm);
   font-size: 13px;
   cursor: pointer;
@@ -456,8 +457,9 @@
 }
 
 #socratic-reader-overlay .sr-nav-btn:hover {
-  background: var(--sr-bg-dark);
+  background: var(--sr-green-light);
   border-color: var(--sr-green);
+  color: var(--sr-green-dark);
 }
 
 #socratic-reader-overlay .sr-counter {
