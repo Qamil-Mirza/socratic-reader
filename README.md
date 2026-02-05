@@ -7,7 +7,10 @@ A Chrome Extension that helps you read philosophy intentionally by highlighting 
 - **Smart Text Extraction**: Analyzes selected text or visible content in the viewport
 - **AI-Powered Analysis**: Identifies key claims and arguments worth interrogating
 - **Socratic Questions**: Generates thought-provoking questions for each highlighted claim
-- **Note-Taking**: Save your thoughts and reflections tied to specific highlights
+- **User Highlights**: Select any text while the sidebar is open — a floating `+` button appears; tap it to create a highlight and auto-generate a Socratic question for it
+- **Socratic Chat**: Open a multi-turn dialogue on any highlight. The extension conducts elenchus — asking one question at a time — and never lectures
+- **Aporia Meter**: A progress bar tracks how close you are to genuine intellectual uncertainty. When you reach aporia (≥ 95 %), a congratulations modal appears
+- **Delete Highlights**: Remove any highlight individually with the × button on its card
 - **Multiple LLM Providers**: Supports OpenAI, Google Gemini, and Ollama (local)
 - **Keyboard Shortcut**: Quick toggle with `Ctrl+Shift+S` (or `Cmd+Shift+S` on Mac)
 
@@ -92,9 +95,24 @@ Click "Test Connection" in settings to verify your setup is working.
 ### Working with Highlights
 
 - **Navigate**: Use the Prev/Next buttons or click items in the sidebar
-- **Jump to text**: Click a highlight in the sidebar to scroll to it on the page
-- **Take notes**: Each highlight has a note field - type and click "Save Note"
-- **Close**: Click the × button or press the keyboard shortcut again
+- **Jump to text**: Click the numbered badge on a card to scroll to that highlight on the page
+- **Delete**: Hover over a card header and click the × button to remove the highlight and its card
+- **Close**: Click the × button in the overlay header or press the keyboard shortcut again
+
+### Highlighting Your Own Text
+
+1. Open the sidebar (`Ctrl+Shift+S`) and let the page finish analyzing
+2. Select any passage of 10+ characters on the page
+3. A green `+` button appears near the selection — click it
+4. The text is immediately highlighted and a Socratic question is generated for it
+
+### Socratic Chat
+
+1. Expand any highlight card and click **▶ Discuss**
+2. The sidebar switches to a chat view showing the highlighted passage and an opening question
+3. Type your response and press Enter (or click Send) to continue the dialogue
+4. The **Progress** bar at the top tracks your journey toward aporia — genuine intellectual uncertainty
+5. When the score reaches 95 % or above, a congratulations modal appears. Dismiss it and keep reading
 
 ### Keyboard Shortcuts
 
@@ -134,25 +152,6 @@ Generate coverage report:
 npm run test:coverage
 ```
 
-## Manual Test Checklist
-
-Before releasing, verify these scenarios:
-
-- [ ] Selection analysis works on a Wikipedia article
-- [ ] Viewport fallback works when nothing is selected
-- [ ] Highlights render correctly and are clickable
-- [ ] Clicking a highlight in the sidebar scrolls to it on the page
-- [ ] Notes persist after page refresh
-- [ ] Notes persist after browser restart
-- [ ] Provider switching works (OpenAI → Gemini → Ollama)
-- [ ] Test connection button works for each provider
-- [ ] Test connection shows error for invalid API key
-- [ ] Keyboard shortcut toggles overlay
-- [ ] Error states display correctly in sidebar
-- [ ] Long articles chunk properly with progress indicator
-- [ ] Overlay close button works
-- [ ] Prev/Next navigation cycles through highlights
-
 ## Project Structure
 
 ```
@@ -173,10 +172,12 @@ socratic-reader/
 │   │   ├── options.html    # Settings page
 │   │   └── options.ts      # Settings logic
 │   ├── shared/
-│   │   ├── types.ts        # TypeScript interfaces
+│   │   ├── types.ts        # TypeScript interfaces (config, highlights, chat messages)
 │   │   ├── storage.ts      # Chrome storage wrappers
-│   │   └── llm.ts          # LLM provider abstraction
-│   └── __tests__/          # Test files
+│   │   ├── llm.ts          # LLM provider abstraction (analysis, question gen, chat)
+│   │   ├── anchoring.ts    # Robust text-anchor descriptors for persistent highlights
+│   │   └── semantic-chunking.ts  # Sentence/paragraph-aware text chunking
+│   └── __tests__/          # Test files (llm, chat, highlighting, anchoring, …)
 ├── public/
 │   └── icons/              # Extension icons
 └── dist/                   # Build output (load this in Chrome)
