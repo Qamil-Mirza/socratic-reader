@@ -100,7 +100,45 @@ export interface TestConnectionResponse {
   error?: string;
 }
 
-export type Message = AnalyzeChunkMessage | ToggleOverlayMessage | TestConnectionMessage;
+// Chat message shape shared by content script and background
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+// Feature 2: user-created highlight → question generation
+export interface GenerateQuestionsMessage {
+  action: 'GENERATE_QUESTIONS';
+  selectedText: string;
+  url: string;
+}
+export interface GenerateQuestionsResponse {
+  question?: string;
+  explanation?: string;
+  error?: string;
+}
+
+// Feature 3: multi-turn Socratic chat per highlight
+export interface SocraticChatMessage {
+  action: 'SOCRATIC_CHAT';
+  highlightId: string;
+  highlightText: string;
+  history: ChatMessage[];   // full history including system msg; user msg already appended
+  userMessage: string;      // always '' in current flow; reserved for future use
+}
+export interface SocraticChatResponse {
+  response?: string;
+  aporiaScore?: number;
+  error?: string;
+}
+
+// Parsed chat result returned by callSocraticChat
+export interface ChatResult {
+  response: string;
+  aporiaScore: number;      // clamped 0–1
+}
+
+export type Message = AnalyzeChunkMessage | ToggleOverlayMessage | TestConnectionMessage | GenerateQuestionsMessage | SocraticChatMessage;
 
 // Overlay states
 export type OverlayState = 'IDLE' | 'EXTRACTING' | 'ANALYZING' | 'DISPLAYING' | 'ERROR';

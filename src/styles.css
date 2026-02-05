@@ -566,3 +566,379 @@
 .socratic-snap-zone.right {
   right: 0;
 }
+
+/* =============================================================================
+   Feature 1: Delete Button
+   ============================================================================= */
+
+#socratic-reader-overlay .sr-delete-btn {
+  margin-left: auto;
+  margin-right: 4px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  background: transparent;
+  color: #c62828;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: var(--sr-radius-sm);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--sr-transition), background-color var(--sr-transition);
+  flex-shrink: 0;
+}
+
+#socratic-reader-overlay .sr-highlight-header:hover .sr-delete-btn {
+  opacity: 0.6;
+}
+
+#socratic-reader-overlay .sr-delete-btn:hover {
+  opacity: 1 !important;
+  background: #ffcdd2;
+}
+
+/* =============================================================================
+   Feature 2: Selection Floating "+" Button
+   ============================================================================= */
+
+.socratic-selection-btn {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--sr-green);
+  color: white;
+  border: 2px solid white;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  z-index: 2147483648;
+  transition: transform var(--sr-transition), background-color var(--sr-transition);
+  user-select: none;
+}
+
+.socratic-selection-btn:hover {
+  background: var(--sr-green-dark);
+  transform: scale(1.15);
+}
+
+/* =============================================================================
+   Feature 3: Chat Button
+   ============================================================================= */
+
+#socratic-reader-overlay .sr-chat-btn {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--sr-green);
+  background: white;
+  color: var(--sr-green-dark);
+  border-radius: var(--sr-radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--sr-transition), color var(--sr-transition);
+  text-align: center;
+}
+
+#socratic-reader-overlay .sr-chat-btn:hover {
+  background: var(--sr-green-light);
+  color: var(--sr-green-dark);
+}
+
+/* =============================================================================
+   Feature 3: Chat Panel
+   ============================================================================= */
+
+#socratic-reader-overlay .sr-chat-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+#socratic-reader-overlay .sr-chat-header {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--sr-border);
+  margin-bottom: 8px;
+}
+
+#socratic-reader-overlay .sr-chat-back-btn {
+  background: none;
+  border: none;
+  color: var(--sr-green-dark);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0 0 6px 0;
+  transition: color var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-chat-back-btn:hover {
+  color: var(--sr-green);
+}
+
+#socratic-reader-overlay .sr-chat-context {
+  margin: 0;
+  font-style: italic;
+  color: var(--sr-text-secondary);
+  font-size: 13px;
+  border-left: 3px solid var(--sr-green-light);
+  padding-left: 10px;
+}
+
+/* Aporia Meter */
+#socratic-reader-overlay .sr-aporia-meter-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--sr-border);
+  margin-bottom: 8px;
+}
+
+#socratic-reader-overlay .sr-aporia-label {
+  font-size: 12px;
+  color: var(--sr-text-secondary);
+  font-weight: 600;
+  flex-shrink: 0;
+  width: 52px;
+}
+
+#socratic-reader-overlay .sr-aporia-meter {
+  flex: 1;
+  height: 6px;
+  background: var(--sr-border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#socratic-reader-overlay .sr-aporia-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--sr-green-light), var(--sr-green), var(--sr-green-dark));
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+#socratic-reader-overlay .sr-aporia-value {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sr-green-dark);
+  flex-shrink: 0;
+  width: 32px;
+  text-align: right;
+}
+
+/* Chat Messages */
+#socratic-reader-overlay .sr-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+  max-height: 240px;
+}
+
+#socratic-reader-overlay .sr-chat-msg-user {
+  align-self: flex-end;
+  background: var(--sr-green-light);
+  color: var(--sr-text);
+  padding: 8px 12px;
+  border-radius: 12px 12px 4px 12px;
+  font-size: 13px;
+  max-width: 85%;
+  word-wrap: break-word;
+}
+
+#socratic-reader-overlay .sr-chat-msg-assistant {
+  align-self: flex-start;
+  background: white;
+  border: 1px solid var(--sr-border);
+  color: var(--sr-text);
+  padding: 8px 12px;
+  border-radius: 12px 12px 12px 4px;
+  font-size: 13px;
+  max-width: 90%;
+  word-wrap: break-word;
+}
+
+/* Chat Input */
+#socratic-reader-overlay .sr-chat-input-area {
+  display: flex;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--sr-border);
+  margin-top: 8px;
+  align-items: flex-end;
+}
+
+#socratic-reader-overlay .sr-chat-textarea {
+  flex: 1;
+  resize: none;
+  border: 1px solid var(--sr-border);
+  border-radius: var(--sr-radius-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--sr-text);
+  background: white;
+  transition: border-color var(--sr-transition);
+  min-width: 0;
+}
+
+#socratic-reader-overlay .sr-chat-textarea:focus {
+  outline: none;
+  border-color: var(--sr-green);
+}
+
+#socratic-reader-overlay .sr-chat-textarea:disabled {
+  background: var(--sr-bg-dark);
+  color: var(--sr-text-secondary);
+}
+
+#socratic-reader-overlay .sr-chat-send-btn {
+  padding: 8px 14px;
+  background: var(--sr-green);
+  color: white;
+  border: none;
+  border-radius: var(--sr-radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color var(--sr-transition);
+}
+
+#socratic-reader-overlay .sr-chat-send-btn:hover {
+  background: var(--sr-green-dark);
+}
+
+#socratic-reader-overlay .sr-chat-send-btn:disabled {
+  background: var(--sr-border);
+  color: var(--sr-text-secondary);
+  cursor: not-allowed;
+}
+
+/* Chat messages scrollbar */
+#socratic-reader-overlay .sr-chat-messages::-webkit-scrollbar {
+  width: 4px;
+}
+
+#socratic-reader-overlay .sr-chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#socratic-reader-overlay .sr-chat-messages::-webkit-scrollbar-thumb {
+  background: var(--sr-border);
+  border-radius: 2px;
+}
+
+/* =============================================================================
+   Feature 4: Aporia Congratulations Modal
+   ============================================================================= */
+
+.socratic-aporia-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 2147483649;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.socratic-aporia-modal-content {
+  background: white;
+  border-radius: 16px;
+  padding: 40px 36px;
+  max-width: 460px;
+  width: 100%;
+  text-align: center;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: socratic-aporia-entrance 0.35s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+}
+
+@keyframes socratic-aporia-entrance {
+  from {
+    opacity: 0;
+    transform: scale(0.85) translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.socratic-aporia-icon {
+  font-size: 48px;
+  color: var(--sr-green-dark);
+  margin-bottom: 12px;
+  line-height: 1;
+}
+
+.socratic-aporia-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--sr-green-dark);
+  margin: 0 0 16px;
+}
+
+.socratic-aporia-quote {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-left: 3px solid var(--sr-green);
+  background: var(--sr-bg-dark);
+  border-radius: 0 var(--sr-radius-sm) var(--sr-radius-sm) 0;
+  text-align: left;
+  font-style: italic;
+  color: var(--sr-text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.socratic-aporia-quote cite {
+  display: block;
+  margin-top: 6px;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--sr-green-dark);
+  font-size: 13px;
+}
+
+.socratic-aporia-explanation {
+  color: var(--sr-text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0 0 24px;
+}
+
+.socratic-aporia-close-btn {
+  display: inline-block;
+  padding: 10px 28px;
+  background: var(--sr-green);
+  color: white;
+  border: none;
+  border-radius: var(--sr-radius);
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--sr-transition), transform var(--sr-transition);
+}
+
+.socratic-aporia-close-btn:hover {
+  background: var(--sr-green-dark);
+  transform: scale(1.05);
+}

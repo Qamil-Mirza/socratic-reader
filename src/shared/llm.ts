@@ -7,6 +7,8 @@ import {
   LLMError,
   ConfigError,
   DEFAULT_MODELS,
+  ChatMessage,
+  ChatResult,
 } from './types';
 
 // Provider base URLs
@@ -26,6 +28,40 @@ Follow these rules:
 - Return only structured JSON as instructed. Do not include any natural language outside the JSON.
 
 Be precise, analytical, and strict.`;
+
+// System prompt for multi-turn Socratic chat (exported for use in content script)
+export const SOCRATIC_CHAT_SYSTEM_PROMPT = `You are a Socratic tutor guiding a student through a single claim they have highlighted while reading.
+
+Rules:
+- Conduct elenchus: expose hidden assumptions, contradictions, and gaps by questioning — never lecture.
+- Ask exactly ONE question per turn. Never provide answers or explanations unprompted.
+- Ground every question in what the student has actually said or in the highlighted text.
+- Do NOT repeat a question that has already been asked.
+
+Response format — return ONLY valid JSON, no surrounding text:
+{ "response": "<your single Socratic question or a brief acknowledgement followed by one question>", "aporiaScore": <number 0.0–1.0> }
+
+Aporia score guide (how close the student is to genuine aporia — the productive state of intellectual disorientation):
+  0.0–0.2  Surface engagement. Student has not yet examined the claim.
+  0.2–0.4  Position forming. Student is articulating a stance but has not been challenged.
+  0.4–0.6  Intellectual tension. Student is encountering a difficulty or contradiction.
+  0.6–0.8  Contradiction acknowledged. Student recognises a conflict in their thinking.
+  0.8–0.95 Near-aporia. Student is struggling productively and approaching genuine uncertainty.
+  1.0      TRUE APORIA ONLY. Reserve this score exclusively for when the student explicitly states what they do not know and why. Do not assign 1.0 prematurely.
+
+IMPORTANT: The score must never decrease between turns. If the previous score was X, the new score must be >= X.`;
+
+// Prompt for single-turn question generation from user-selected text
+function buildQuestionGenerationPrompt(selectedText: string): string {
+  return `A student has highlighted the following passage while reading:
+
+"${selectedText}"
+
+Generate a single Socratic question that will help them think critically about this claim. Also provide a one-sentence explanation of why this question is worth asking.
+
+Return ONLY valid JSON:
+{ "question": "<the Socratic question>", "explanation": "<one sentence on why this question matters>" }`;
+}
 
 // User prompt template
 function buildUserPrompt(chunkText: string): string {
@@ -170,24 +206,31 @@ function validateHighlight(h: unknown, index: number): Highlight {
 }
 
 /**
+ * Extract the text content string from a provider's raw HTTP response.
+ * Handles Ollama's two shapes: { response } (generate) and { message: { content } } (chat).
+ */
+export function extractContent(provider: Provider, response: unknown): string {
+  if (provider === 'openai') {
+    const r = response as { choices?: Array<{ message?: { content?: string } }> };
+    return r.choices?.[0]?.message?.content ?? '';
+  } else if (provider === 'gemini') {
+    const r = response as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    return r.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  } else if (provider === 'ollama') {
+    // /api/chat returns { message: { content } }; /api/generate returns { response }
+    const r = response as { response?: string; message?: { content?: string } };
+    return r.message?.content ?? r.response ?? '';
+  }
+  throw new LLMError(`Unknown provider: ${provider}`);
+}
+
+/**
  * Parse response from any provider into AnalysisResult
  */
 export function parseResponse(provider: Provider, response: unknown): AnalysisResult {
   let content: string;
-
   try {
-    if (provider === 'openai') {
-      const r = response as { choices?: Array<{ message?: { content?: string } }> };
-      content = r.choices?.[0]?.message?.content ?? '';
-    } else if (provider === 'gemini') {
-      const r = response as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-      content = r.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    } else if (provider === 'ollama') {
-      const r = response as { response?: string };
-      content = r.response ?? '';
-    } else {
-      throw new LLMError(`Unknown provider: ${provider}`);
-    }
+    content = extractContent(provider, response);
   } catch (e) {
     throw new LLMError(`Failed to extract content from ${provider} response: ${e}`);
   }
@@ -219,6 +262,227 @@ export function parseResponse(provider: Provider, response: unknown): AnalysisRe
   const highlights = obj.highlights.map((h, i) => validateHighlight(h, i));
 
   return { highlights };
+}
+
+// =============================================================================
+// Question Generation (single-turn, Feature 2)
+// =============================================================================
+
+export function buildOpenAIGenerateQuestionsRequest(selectedText: string, config: Config): LLMRequest {
+  const baseURL = config.baseURL || PROVIDER_BASE_URLS.openai;
+  const model = config.model || DEFAULT_MODELS.openai;
+  return {
+    url: `${baseURL}/chat/completions`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: {
+      model,
+      messages: [
+        { role: 'user', content: buildQuestionGenerationPrompt(selectedText) },
+      ],
+      temperature: 0.4,
+      response_format: { type: 'json_object' },
+    },
+  };
+}
+
+export function buildGeminiGenerateQuestionsRequest(selectedText: string, config: Config): LLMRequest {
+  const baseURL = config.baseURL || PROVIDER_BASE_URLS.gemini;
+  const model = config.model || DEFAULT_MODELS.gemini;
+  return {
+    url: `${baseURL}/models/${model}:generateContent?key=${config.apiKey}`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      contents: [{ parts: [{ text: buildQuestionGenerationPrompt(selectedText) }] }],
+      generationConfig: { temperature: 0.4, responseMimeType: 'application/json' },
+    },
+  };
+}
+
+export function buildOllamaGenerateQuestionsRequest(selectedText: string, config: Config): LLMRequest {
+  let baseURL = config.baseURL || PROVIDER_BASE_URLS.ollama;
+  baseURL = baseURL.replace(/\/+$/, '');
+  const model = config.model || DEFAULT_MODELS.ollama;
+  return {
+    url: `${baseURL}/api/generate`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      model,
+      prompt: buildQuestionGenerationPrompt(selectedText),
+      stream: false,
+      format: 'json',
+    },
+  };
+}
+
+export function parseQuestionResponse(provider: Provider, response: unknown): { question: string; explanation: string } {
+  const content = extractContent(provider, response);
+  if (!content) throw new LLMError('Empty response from LLM');
+
+  const jsonStr = extractJSON(content);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new LLMError(`Invalid JSON in question response: ${jsonStr.slice(0, 100)}...`);
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  return {
+    question: String(obj.question || ''),
+    explanation: String(obj.explanation || ''),
+  };
+}
+
+export async function generateQuestion(selectedText: string, config: Config): Promise<{ question: string; explanation: string }> {
+  if (config.provider !== 'ollama' && !config.apiKey) {
+    throw new ConfigError(`API key required for ${config.provider}`);
+  }
+
+  let request: LLMRequest;
+  switch (config.provider) {
+    case 'openai':   request = buildOpenAIGenerateQuestionsRequest(selectedText, config); break;
+    case 'gemini':   request = buildGeminiGenerateQuestionsRequest(selectedText, config); break;
+    case 'ollama':   request = buildOllamaGenerateQuestionsRequest(selectedText, config); break;
+    default:         throw new ConfigError(`Unknown provider: ${config.provider}`);
+  }
+
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: JSON.stringify(request.body),
+  });
+
+  if (!response.ok) {
+    throw new LLMError(`API error (${response.status}): ${(await response.text()).slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return parseQuestionResponse(config.provider, data);
+}
+
+// =============================================================================
+// Socratic Chat (multi-turn, Feature 3)
+// =============================================================================
+
+export function buildOpenAIChatRequest(history: ChatMessage[], config: Config): LLMRequest {
+  const baseURL = config.baseURL || PROVIDER_BASE_URLS.openai;
+  const model = config.model || DEFAULT_MODELS.openai;
+  return {
+    url: `${baseURL}/chat/completions`,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.apiKey}`,
+    },
+    body: {
+      model,
+      messages: history,
+      temperature: 0.5,
+      response_format: { type: 'json_object' },
+    },
+  };
+}
+
+export function buildGeminiChatRequest(history: ChatMessage[], config: Config): LLMRequest {
+  const baseURL = config.baseURL || PROVIDER_BASE_URLS.gemini;
+  const model = config.model || DEFAULT_MODELS.gemini;
+
+  // Gemini has no 'system' role in contents; prepend system prompt text to first user turn
+  const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+  let systemText = '';
+  for (const msg of history) {
+    if (msg.role === 'system') {
+      systemText = msg.content;
+      continue;
+    }
+    const role = msg.role === 'assistant' ? 'model' : 'user';
+    if (contents.length === 0 && role === 'user' && systemText) {
+      contents.push({ role, parts: [{ text: systemText + '\n\n' + msg.content }] });
+      systemText = '';
+    } else {
+      contents.push({ role, parts: [{ text: msg.content }] });
+    }
+  }
+
+  return {
+    url: `${baseURL}/models/${model}:generateContent?key=${config.apiKey}`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      contents,
+      generationConfig: { temperature: 0.5, responseMimeType: 'application/json' },
+    },
+  };
+}
+
+export function buildOllamaChatRequest(history: ChatMessage[], config: Config): LLMRequest {
+  let baseURL = config.baseURL || PROVIDER_BASE_URLS.ollama;
+  baseURL = baseURL.replace(/\/+$/, '');
+  const model = config.model || DEFAULT_MODELS.ollama;
+  return {
+    url: `${baseURL}/api/chat`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: {
+      model,
+      messages: history,
+      stream: false,
+      format: 'json',
+    },
+  };
+}
+
+export function parseChatResponse(provider: Provider, response: unknown): ChatResult {
+  const content = extractContent(provider, response);
+  if (!content) throw new LLMError('Empty response from LLM');
+
+  const jsonStr = extractJSON(content);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new LLMError(`Invalid JSON in chat response: ${jsonStr.slice(0, 100)}...`);
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const rawScore = typeof obj.aporiaScore === 'number' ? obj.aporiaScore : 0;
+  return {
+    response: String(obj.response || ''),
+    aporiaScore: Math.max(0, Math.min(1, rawScore)), // clamp to [0, 1]
+  };
+}
+
+export async function callSocraticChat(history: ChatMessage[], _userMessage: string, config: Config): Promise<ChatResult> {
+  if (config.provider !== 'ollama' && !config.apiKey) {
+    throw new ConfigError(`API key required for ${config.provider}`);
+  }
+
+  let request: LLMRequest;
+  switch (config.provider) {
+    case 'openai':   request = buildOpenAIChatRequest(history, config); break;
+    case 'gemini':   request = buildGeminiChatRequest(history, config); break;
+    case 'ollama':   request = buildOllamaChatRequest(history, config); break;
+    default:         throw new ConfigError(`Unknown provider: ${config.provider}`);
+  }
+
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: JSON.stringify(request.body),
+  });
+
+  if (!response.ok) {
+    throw new LLMError(`API error (${response.status}): ${(await response.text()).slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return parseChatResponse(config.provider, data);
 }
 
 /**

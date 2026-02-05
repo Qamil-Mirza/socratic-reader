@@ -1,6 +1,30 @@
 // Types inlined to avoid imports (required for programmatic injection)
 import { createSemanticChunks, detectSentences, type SemanticChunk } from './shared/semantic-chunking';
 
+// Inlined here rather than imported from shared/llm to avoid Vite code-splitting
+// llm.ts into a shared chunk — content scripts run as classic (non-module) scripts
+// and cannot use `import`.  Must stay in sync with SOCRATIC_CHAT_SYSTEM_PROMPT in llm.ts.
+const SOCRATIC_CHAT_SYSTEM_PROMPT = `You are a Socratic tutor guiding a student through a single claim they have highlighted while reading.
+
+Rules:
+- Conduct elenchus: expose hidden assumptions, contradictions, and gaps by questioning — never lecture.
+- Ask exactly ONE question per turn. Never provide answers or explanations unprompted.
+- Ground every question in what the student has actually said or in the highlighted text.
+- Do NOT repeat a question that has already been asked.
+
+Response format — return ONLY valid JSON, no surrounding text:
+{ "response": "<your single Socratic question or a brief acknowledgement followed by one question>", "aporiaScore": <number 0.0–1.0> }
+
+Aporia score guide (how close the student is to genuine aporia — the productive state of intellectual disorientation):
+  0.0–0.2  Surface engagement. Student has not yet examined the claim.
+  0.2–0.4  Position forming. Student is articulating a stance but has not been challenged.
+  0.4–0.6  Intellectual tension. Student is encountering a difficulty or contradiction.
+  0.6–0.8  Contradiction acknowledged. Student recognises a conflict in their thinking.
+  0.8–0.95 Near-aporia. Student is struggling productively and approaching genuine uncertainty.
+  1.0      TRUE APORIA ONLY. Reserve this score exclusively for when the student explicitly states what they do not know and why. Do not assign 1.0 prematurely.
+
+IMPORTANT: The score must never decrease between turns. If the previous score was X, the new score must be >= X.`;
+
 interface NodeRange {
   node: Text;
   start: number;
@@ -128,6 +152,24 @@ const SNAP_THRESHOLD = 100;
 // Snap zone indicators
 let snapZoneLeft: HTMLElement | null = null;
 let snapZoneRight: HTMLElement | null = null;
+
+// Feature 1-4: module-level highlight ID counter (prevents collisions between
+// analysis-generated and user-created highlights across multiple runs)
+let nextHighlightId = 0;
+
+// Feature 2: selection floating button state
+let selectionFloatingBtn: HTMLElement | null = null;
+let selectionRange: Range | null = null;
+
+// Feature 3: per-highlight chat sessions
+interface ChatSession {
+  highlightId: string;
+  highlightText: string;
+  history: Array<{ role: string; content: string }>;
+  aporiaScore: number;
+}
+const chatSessions = new Map<string, ChatSession>();
+let activeChatHighlightId: string | null = null;
 
 // =============================================================================
 // Robust Text Anchoring
@@ -1353,6 +1395,10 @@ function updateOverlayState(): void {
       error.hidden = false;
       break;
     case 'DISPLAYING':
+      // Merge any highlights that landed on the same sentence (can happen
+      // across chunks during live analysis, or when a user highlight overlaps
+      // an analysis-generated one).  Questions accumulate on the first card.
+      currentHighlights = deduplicateByText(currentHighlights);
       if (currentHighlights.length === 0) {
         empty.hidden = false;
       } else {
@@ -1418,9 +1464,11 @@ function renderHighlightsList(): void {
         <div class="sr-highlight-header" role="button" tabindex="0">
           <span class="sr-highlight-number">${i + 1}</span>
           <p class="sr-claim">"${escapeHtml(h.text.slice(0, 100))}${h.text.length > 100 ? '...' : ''}"</p>
+          <button class="sr-delete-btn" data-id="${h.id}" aria-label="Delete highlight">&times;</button>
         </div>
         <div class="sr-highlight-content">
           ${questionsHtml}
+          <button class="sr-chat-btn" data-id="${h.id}">&#9654; Discuss</button>
         </div>
       </div>
     `;
@@ -1429,6 +1477,8 @@ function renderHighlightsList(): void {
   // Add event listeners
   list.querySelectorAll('.sr-highlight-header').forEach((header) => {
     header.addEventListener('click', (e) => {
+      // Don't toggle collapse if clicking the delete button
+      if ((e.target as HTMLElement).classList.contains('sr-delete-btn')) return;
       const item = (e.currentTarget as HTMLElement).closest('.sr-highlight-item');
       item?.classList.toggle('collapsed');
       e.preventDefault();
@@ -1442,6 +1492,25 @@ function renderHighlightsList(): void {
       const item = (e.currentTarget as HTMLElement).closest('.sr-highlight-item');
       const index = parseInt(item?.getAttribute('data-index') ?? '0', 10);
       selectHighlight(index);
+    });
+  });
+
+  // Delete button listeners
+  list.querySelectorAll('.sr-delete-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id') ?? '';
+      const index = currentHighlights.findIndex(h => h.id === id);
+      if (index !== -1) deleteHighlight(index);
+    });
+  });
+
+  // Chat button listeners
+  list.querySelectorAll('.sr-chat-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = (e.currentTarget as HTMLElement).getAttribute('data-id') ?? '';
+      openChatPanel(id);
     });
   });
 }
@@ -1512,8 +1581,6 @@ function applyCachedHighlights(
   cachedHighlights: Highlight[],
   chunks: TextChunk[]
 ): void {
-  let highlightCounter = 0;
-
   // Process all highlights first (in original reading order)
   const processed: ProcessedHighlight[] = [];
 
@@ -1534,7 +1601,7 @@ function applyCachedHighlights(
       }
     }
 
-    const id = `h-${highlightCounter++}`;
+    const id = `h-${nextHighlightId++}`;
     const chunk = chunks[chunkIndex];
     const text = chunk.text.slice(localStart, localEnd);
     const range = offsetToRange(chunk, localStart, localEnd);
@@ -1639,7 +1706,6 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
   // For now, analyze in document order
   const priorityOrder = chunks.map((_, index) => index);
 
-  let highlightCounter = 0;
   const allHighlightsForCache: Highlight[] = [];
 
   for (let orderIdx = 0; orderIdx < priorityOrder.length; orderIdx++) {
@@ -1680,7 +1746,7 @@ async function startAnalysis(forceRefresh: boolean = false): Promise<void> {
         const processedForChunk: ProcessedHighlight[] = [];
 
         for (const h of response.highlights) {
-          const id = `h-${highlightCounter++}`;
+          const id = `h-${nextHighlightId++}`;
           const expanded = expandToSentence(chunks[i].text, h.start, h.end);
           const text = chunks[i].text.slice(expanded.start, expanded.end);
           const range = offsetToRange(chunks[i], expanded.start, expanded.end);
@@ -1906,6 +1972,368 @@ function setupHighlightHoverListeners(): void {
 }
 
 // =============================================================================
+// Feature 1: Delete Highlight
+// =============================================================================
+
+function deleteHighlight(index: number): void {
+  if (index < 0 || index >= currentHighlights.length) return;
+
+  const highlight = currentHighlights[index];
+
+  // Unwrap the highlight span from DOM (same pattern as clearHighlights but single element)
+  const span = document.querySelector(`[data-highlight-id="${highlight.id}"]`);
+  if (span) {
+    const parent = span.parentNode;
+    if (parent) {
+      while (span.firstChild) {
+        parent.insertBefore(span.firstChild, span);
+      }
+      parent.removeChild(span);
+      parent.normalize();
+    }
+  }
+
+  // Remove from state
+  currentHighlights.splice(index, 1);
+
+  // Adjust index
+  if (currentHighlightIndex >= currentHighlights.length) {
+    currentHighlightIndex = Math.max(0, currentHighlights.length - 1);
+  }
+
+  // Invalidate cache for this page
+  clearCachedAnalysis(window.location.href);
+
+  // Re-render
+  if (currentHighlights.length === 0) {
+    overlayState = 'DISPLAYING';
+    updateOverlayState();
+  } else {
+    updateOverlayState();
+    setupHighlightHoverListeners();
+  }
+}
+
+// =============================================================================
+// Feature 2: User-Created Highlights
+// =============================================================================
+
+function handleSelectionChange(): void {
+  // Remove any existing floating btn
+  removeSelectionFloatingBtn();
+
+  // Guards: overlay must be visible and in DISPLAYING state
+  if (!overlayElement?.classList.contains('visible')) return;
+  if (overlayState !== 'DISPLAYING') return;
+  if (activeChatHighlightId) return;
+
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+
+  const selectedText = selection.toString().trim();
+  if (selectedText.length < 10) return;
+
+  const range = selection.getRangeAt(0);
+
+  // Don't show if selection is inside the overlay
+  if (overlayElement && overlayElement.contains(range.commonAncestorContainer)) return;
+
+  selectionRange = range.cloneRange();
+  showSelectionFloatingBtn(range);
+}
+
+function showSelectionFloatingBtn(range: Range): void {
+  removeSelectionFloatingBtn();
+
+  const btn = document.createElement('button');
+  btn.className = 'socratic-selection-btn';
+  btn.textContent = '+';
+  btn.setAttribute('aria-label', 'Add highlight');
+
+  // Position above/right of selection's last rect
+  const rects = range.getClientRects();
+  const lastRect = rects.length > 0 ? rects[rects.length - 1] : undefined;
+  if (lastRect) {
+    btn.style.top = `${lastRect.top - 44 + window.scrollY}px`;
+    btn.style.left = `${lastRect.right + 4 + window.scrollX}px`;
+  }
+
+  // Prevent mousedown from collapsing selection
+  btn.addEventListener('mousedown', (e) => e.preventDefault());
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    handleAddUserHighlight();
+  });
+
+  document.body.appendChild(btn);
+  selectionFloatingBtn = btn;
+}
+
+function removeSelectionFloatingBtn(): void {
+  if (selectionFloatingBtn && document.body.contains(selectionFloatingBtn)) {
+    document.body.removeChild(selectionFloatingBtn);
+  }
+  selectionFloatingBtn = null;
+}
+
+async function handleAddUserHighlight(): Promise<void> {
+  if (!selectionRange) return;
+
+  removeSelectionFloatingBtn();
+
+  const range = selectionRange;
+  selectionRange = null;
+
+  // Optimistically apply highlight span
+  const id = `h-${nextHighlightId++}`;
+  const text = range.toString().trim();
+  applyHighlight(range, id);
+
+  // Create provisional highlight entry
+  const provisional: ProcessedHighlight = {
+    start: 0,
+    end: text.length,
+    reason: 'User highlight',
+    question: '',
+    explanation: '',
+    id,
+    text,
+    range: null,
+    chunkIndex: -1,
+    questions: [],
+  };
+  currentHighlights.push(provisional);
+  updateOverlayState();
+
+  // Collapse selection so re-render doesn't break
+  window.getSelection()?.removeAllRanges();
+
+  // Request question generation from background
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'GENERATE_QUESTIONS',
+      selectedText: text,
+      url: window.location.href,
+    }) as { question?: string; explanation?: string; error?: string };
+
+    if (response?.error) {
+      console.warn('[Socratic Reader] Question generation failed:', response.error);
+      // Still keep the highlight, just with no question
+      provisional.questions = [{ question: 'Reflect on this passage.', explanation: response.error }];
+    } else {
+      provisional.questions = [{ question: response.question || '', explanation: response.explanation || '' }];
+    }
+  } catch (e) {
+    console.warn('[Socratic Reader] Question generation error:', e);
+    provisional.questions = [{ question: 'Reflect on this passage.', explanation: 'Could not generate question.' }];
+  }
+
+  // Re-render with the real question
+  updateOverlayState();
+  setupHighlightHoverListeners();
+}
+
+// =============================================================================
+// Feature 3: Chat Panel
+// =============================================================================
+
+function openChatPanel(highlightId: string): void {
+  const highlight = currentHighlights.find(h => h.id === highlightId);
+  if (!highlight) return;
+
+  // Initialize session if not exists
+  if (!chatSessions.has(highlightId)) {
+    const firstQuestion = highlight.questions[0]?.question || 'What do you think about this claim?';
+    const session: ChatSession = {
+      highlightId,
+      highlightText: highlight.text,
+      history: [
+        { role: 'system', content: SOCRATIC_CHAT_SYSTEM_PROMPT },
+        { role: 'user', content: `I have highlighted the following passage:\n\n"${highlight.text}"\n\nLet's discuss it.` },
+        { role: 'assistant', content: JSON.stringify({ response: firstQuestion, aporiaScore: 0.1 }) },
+      ],
+      aporiaScore: 0.1,
+    };
+    chatSessions.set(highlightId, session);
+  }
+
+  activeChatHighlightId = highlightId;
+  const session = chatSessions.get(highlightId)!;
+  renderChatPanel(session);
+}
+
+function renderChatPanel(session: ChatSession): void {
+  if (!overlayElement) return;
+  const list = overlayElement.querySelector('.sr-highlights-list');
+  if (!list) return;
+
+  // Build messages HTML (skip system message at index 0)
+  const messagesHtml = session.history.slice(1).map((msg) => {
+    let displayText = msg.content;
+    // Assistant messages are JSON — extract the response field
+    if (msg.role === 'assistant') {
+      try {
+        const parsed = JSON.parse(msg.content);
+        displayText = parsed.response || msg.content;
+      } catch {
+        // not JSON, use raw
+      }
+    }
+    const cls = msg.role === 'user' ? 'sr-chat-msg-user' : 'sr-chat-msg-assistant';
+    return `<div class="${cls}">${escapeHtml(displayText)}</div>`;
+  }).join('');
+
+  const pct = Math.round(session.aporiaScore * 100);
+
+  list.innerHTML = `
+    <div class="sr-chat-panel">
+      <div class="sr-chat-header">
+        <button class="sr-chat-back-btn">&larr; Back</button>
+        <blockquote class="sr-chat-context">"${escapeHtml(session.highlightText.slice(0, 80))}${session.highlightText.length > 80 ? '…' : ''}"</blockquote>
+      </div>
+      <div class="sr-aporia-meter-container">
+        <span class="sr-aporia-label">Progress</span>
+        <div class="sr-aporia-meter"><div class="sr-aporia-fill" style="width:${pct}%"></div></div>
+        <span class="sr-aporia-value">${pct}%</span>
+      </div>
+      <div class="sr-chat-messages">${messagesHtml}</div>
+      <div class="sr-chat-input-area">
+        <textarea class="sr-chat-textarea" placeholder="Your response…" rows="2"></textarea>
+        <button class="sr-chat-send-btn">Send</button>
+      </div>
+    </div>
+  `;
+
+  // Auto-scroll messages to bottom
+  const msgContainer = list.querySelector('.sr-chat-messages');
+  if (msgContainer) msgContainer.scrollTop = msgContainer.scrollHeight;
+
+  // Back button
+  list.querySelector('.sr-chat-back-btn')?.addEventListener('click', closeChatPanel);
+
+  // Send button
+  const textarea = list.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
+  const sendBtn = list.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
+
+  function doSend() {
+    if (!textarea || !sendBtn) return;
+    const msg = textarea.value.trim();
+    if (!msg) return;
+    textarea.value = '';
+    sendChatMessage(session.highlightId, msg);
+  }
+
+  sendBtn?.addEventListener('click', doSend);
+  textarea?.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      doSend();
+    }
+  });
+}
+
+async function sendChatMessage(highlightId: string, userMessage: string): Promise<void> {
+  const session = chatSessions.get(highlightId);
+  if (!session) return;
+
+  // Append user message to history (optimistic)
+  session.history.push({ role: 'user', content: userMessage });
+
+  // Re-render immediately (optimistic UI)
+  renderChatPanel(session);
+
+  // Disable input while waiting
+  if (overlayElement) {
+    const textarea = overlayElement.querySelector('.sr-chat-textarea') as HTMLTextAreaElement | null;
+    const sendBtn = overlayElement.querySelector('.sr-chat-send-btn') as HTMLButtonElement | null;
+    if (textarea) textarea.disabled = true;
+    if (sendBtn) sendBtn.disabled = true;
+  }
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'SOCRATIC_CHAT',
+      highlightId,
+      highlightText: session.highlightText,
+      history: session.history,
+      userMessage: '',
+    }) as { response?: string; aporiaScore?: number; error?: string };
+
+    if (response?.error) {
+      console.warn('[Socratic Reader] Chat error:', response.error);
+      session.history.push({ role: 'assistant', content: JSON.stringify({ response: 'An error occurred. Please try again.', aporiaScore: session.aporiaScore }) });
+    } else {
+      // Enforce score monotonicity
+      const newScore = response.aporiaScore ?? 0;
+      session.aporiaScore = Math.max(session.aporiaScore, newScore);
+
+      session.history.push({
+        role: 'assistant',
+        content: JSON.stringify({ response: response.response || '', aporiaScore: session.aporiaScore }),
+      });
+    }
+  } catch (e) {
+    console.warn('[Socratic Reader] Chat request failed:', e);
+    session.history.push({ role: 'assistant', content: JSON.stringify({ response: 'Connection error. Please try again.', aporiaScore: session.aporiaScore }) });
+  }
+
+  // Re-enable input and re-render
+  renderChatPanel(session);
+
+  // Check aporia threshold
+  if (session.aporiaScore >= 0.95) {
+    showAporiaModal();
+  }
+}
+
+function closeChatPanel(): void {
+  activeChatHighlightId = null;
+  updateOverlayState();
+}
+
+// =============================================================================
+// Feature 4: Aporia Modal
+// =============================================================================
+
+function showAporiaModal(): void {
+  // Idempotent: don't create a second modal
+  if (document.getElementById('socratic-aporia-modal')) return;
+
+  const modal = document.createElement('div');
+  modal.id = 'socratic-aporia-modal';
+  modal.className = 'socratic-aporia-modal';
+  modal.innerHTML = `
+    <div class="socratic-aporia-modal-content">
+      <div class="socratic-aporia-icon">&#8734;</div>
+      <h2 class="socratic-aporia-title">Aporia Reached</h2>
+      <blockquote class="socratic-aporia-quote">
+        "The beginning of wisdom is the definition of terms."
+        <cite>— Socrates</cite>
+      </blockquote>
+      <p class="socratic-aporia-explanation">
+        You have arrived at a productive state of intellectual uncertainty. This is not a failure — it is the very beginning of true understanding. The willingness to sit with not-knowing is what separates genuine inquiry from mere opinion.
+      </p>
+      <button class="socratic-aporia-close-btn">Continue Reading</button>
+    </div>
+  `;
+
+  // Close on button click
+  modal.querySelector('.socratic-aporia-close-btn')?.addEventListener('click', () => {
+    modal.remove();
+  });
+
+  // Close on backdrop click (click on the modal itself, not the content card)
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.remove();
+    }
+  });
+
+  document.body.appendChild(modal);
+}
+
+// =============================================================================
 // Initialization
 // =============================================================================
 
@@ -1913,3 +2341,6 @@ console.log('[Socratic Reader] Content script loaded');
 
 // Add keyboard shortcut listener
 document.addEventListener('keydown', handleKeyboardShortcut);
+
+// Feature 2: selection listener for floating "+" button
+document.addEventListener('mouseup', handleSelectionChange);

@@ -8,12 +8,16 @@ import {
   clearCachedAnalysis,
   generateContentHash,
 } from './shared/storage';
-import { callLLM, testConnection } from './shared/llm';
+import { callLLM, testConnection, generateQuestion, callSocraticChat } from './shared/llm';
 import type {
   AnalyzeChunkResponse,
   TestConnectionResponse,
   TestConnectionMessage,
   AnalyzeChunkMessage,
+  GenerateQuestionsMessage,
+  GenerateQuestionsResponse,
+  SocraticChatMessage,
+  SocraticChatResponse,
   SavedNote,
   Highlight,
 } from './shared/types';
@@ -41,6 +45,36 @@ async function handleAnalyzeChunk(msg: AnalyzeChunkMessage): Promise<AnalyzeChun
 async function handleTestConnection(msg: TestConnectionMessage): Promise<TestConnectionResponse> {
   const result = await testConnection(msg.config);
   return result;
+}
+
+/**
+ * Handle question generation for user-created highlights
+ */
+async function handleGenerateQuestions(msg: GenerateQuestionsMessage): Promise<GenerateQuestionsResponse> {
+  try {
+    const config = await getConfig();
+    const { question, explanation } = await generateQuestion(msg.selectedText, config);
+    return { question, explanation };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    console.error('[Socratic Reader] Question generation error:', error);
+    return { error };
+  }
+}
+
+/**
+ * Handle multi-turn Socratic chat
+ */
+async function handleSocraticChat(msg: SocraticChatMessage): Promise<SocraticChatResponse> {
+  try {
+    const config = await getConfig();
+    const { response, aporiaScore } = await callSocraticChat(msg.history, msg.userMessage, config);
+    return { response, aporiaScore };
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    console.error('[Socratic Reader] Socratic chat error:', error);
+    return { error };
+  }
 }
 
 /**
@@ -114,6 +148,26 @@ chrome.runtime.onMessage.addListener(
       clearCachedAnalysis(msg.url as string)
         .then(() => sendResponse({ success: true }))
         .catch((e) => sendResponse({ error: String(e) }));
+      return true;
+    }
+
+    if (msg.action === 'GENERATE_QUESTIONS') {
+      handleGenerateQuestions(msg as unknown as GenerateQuestionsMessage)
+        .then(sendResponse)
+        .catch((e) => {
+          console.error('[Socratic Reader] Unhandled error in GENERATE_QUESTIONS:', e);
+          sendResponse({ error: String(e) });
+        });
+      return true;
+    }
+
+    if (msg.action === 'SOCRATIC_CHAT') {
+      handleSocraticChat(msg as unknown as SocraticChatMessage)
+        .then(sendResponse)
+        .catch((e) => {
+          console.error('[Socratic Reader] Unhandled error in SOCRATIC_CHAT:', e);
+          sendResponse({ error: String(e) });
+        });
       return true;
     }
 
